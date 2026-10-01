@@ -1,0 +1,4 @@
+# -*- shell-script -*- :mode=shellscript:
+
+ISABELLE_LINTER_HOME="$COMPONENT"
+ISABELLE_LINTER_JAR="$ISABELLE_LINTER_HOME/lib/classes/isabelle_linter.jar"

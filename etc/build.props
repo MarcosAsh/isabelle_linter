@@ -1,0 +1,10 @@
+title = Isabelle_Linter
+module = $ISABELLE_LINTER_JAR
+requirements = \
+  env:ISABELLE_SCALA_JAR
+sources = \
+  src/core/pide.scala \
+  src/core/tool.scala \
+  src/lints/faster_step/faster_step.scala
+services = \
+  isabelle.isabelle_linter.Tools

@@ -1,0 +1,10 @@
+section "Isabelle_Linter"
+
+public option faster_step_slow : real = 1.0
+  -- "only `by` steps that take at least this many seconds are tried"
+
+public option faster_step_speedup : real = 2
+  -- "a replacement must be this many times faster than the original step"
+
+public option faster_step_timeout : real = 30
+  -- "seconds at most for checking one step as written"
