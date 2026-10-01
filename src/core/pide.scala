@@ -1,5 +1,4 @@
-/* isabelle_linter: check a session once in a headless PIDE session, then ask the prover about single
-  `by` steps as document overlays (ml/linter_query.ML) */
+/* isabelle_linter: check a session once with PIDE, then ask questions as overlays */
 
 package isabelle.isabelle_linter
 
@@ -7,48 +6,25 @@ import isabelle._
 
 
 object Pide {
-  /** steps, questions, answers **/
+  /* a print function of ml/linter_query.ML, run on the result state of `at` */
+  sealed case class Question(key: String, theory: Document.Node.Name, at: Command, function: String,
+      args: List[String], timeout: Time)
 
-  /* a `by` step; goal is the command before it, whose result state is the goal the step solves */
-  sealed case class Step(theory: Document.Node.Name, line: Int, goal: Command, command: Command, methods: String)
-
-  /* run `by methods` on the goal of step */
-  sealed case class Question(step: Step, methods: String, timeout: Time) {
-    def key: (Long, String) = (step.command.id, methods)
-  }
-
-  sealed case class Answer(verdict: String, ms: Long, message: String) {
+  sealed case class Answer(verdict: String, ms: Long, ms2: Long) {
     def closes: Boolean = verdict == "closes"
   }
 
-  type Answers = Map[(Long, String), Answer]
+  type Answers = Map[String, Answer]
 
-  sealed case class Finding(step: Step, message: String, replacement: String)
-
-  val print_function = "linter_try"
-
-
-  /** the steps of a checked theory **/
-
-  def steps(snapshot: Document.Snapshot): List[Step] = {
-    val node = snapshot.node
-    val lines = Line.Document(node.source)
-    val commands = node.command_iterator().toList.filterNot(_._1.is_ignored)
-    for {
-      ((goal, _), (command, offset)) <- commands.zip(commands.drop(1))
-      if command.span.name == "by"
-      methods = Token.implode(command.span.content.dropWhile(!_.is_command).drop(1)).trim
-    } yield Step(snapshot.node_name, lines.position(offset).line1, goal, command, methods)
-  }
+  /* never counts as closed */
+  val unanswered: Answer = Answer("unanswered", 0, 0)
 
 
-  /** running **/
-
-  /* check the session's theories, then ask the lint's questions in rounds until none are new */
+  /* each lint asks in rounds until it has no new questions */
   def run(
     options: Options,
     session_name: String,
-    lint: Lint,
+    lints: List[Lint],
     dirs: List[Path] = Nil,
     progress: Progress = new Progress
   ): List[Finding] = {
@@ -69,40 +45,39 @@ object Pide {
         error("Failed to load ml/Linter_Query.thy")
 
       val checked = session.use_theories(theories, progress = progress)
-      val all_steps =
-        for {
-          (name, status) <- checked.nodes
-          _ = if (!status.ok) progress.echo_warning("Theory " + name.theory + " does not check: skipped")
-          if status.ok
-          step <- steps(checked.snapshot(name))
-        } yield step
-      progress.echo(all_steps.length.toString + " `by` steps in " + theories.length + " theories")
+      val state = session.get_state()
+      val lemmas = checked.nodes.flatMap({ case (name, _) => Lemma.read(state, checked.snapshot(name)) })
+      val ok = lemmas.filter(_.ok)
+      progress.echo(ok.length.toString + " of " + lemmas.length + " lemmas check")
 
-      var answers: Answers = Map.empty
-      var round = lint.ask(all_steps, answers, options).filterNot(q => answers.contains(q.key))
-      while (round.nonEmpty) {
-        progress.echo("Asking " + round.length + " questions ...")
-        answers ++= ask(session, round, progress)
-        round = lint.ask(all_steps, answers, options).filterNot(q => answers.contains(q.key))
+      lints.flatMap { lint =>
+        var answers: Answers = Map.empty
+        def next(): List[Question] = lint.ask(ok, answers, options).filterNot(q => answers.contains(q.key))
+        var round = next()
+        while (round.nonEmpty) {
+          progress.echo(lint.name + ": asking " + round.length + " questions")
+          answers ++= ask(session, round, progress)
+          round = next()
+        }
+        lint.report(ok, answers, options)
       }
-      lint.report(all_steps, answers, options)
     }
     finally { session.stop() }
   }
 
-  /* one round: every question becomes an overlay, the answers come back as command results */
+  /* one round: all questions as overlays at once */
   private def ask(session: Headless.Session, questions: List[Question], progress: Progress): Answers = {
-    val placed = questions.map(q => (Document_ID.make().toString, q))
+    val placed = questions.map(q => Document_ID.make().toString -> q)
     val overlays =
       placed.foldLeft(Map.empty[Document.Node.Name, Document.Node.Overlays]) {
         case (m, (instance, q)) =>
-          val o = m.getOrElse(q.step.theory, Document.Node.Overlays.empty)
-          m + (q.step.theory -> o.insert(q.step.goal, print_function, List(instance, q.timeout.ms.toString, q.methods)))
+          val o = m.getOrElse(q.theory, Document.Node.Overlays.empty)
+          m + (q.theory -> o.insert(q.at, q.function, instance :: q.timeout.ms.toString :: q.args))
       }
     session.update(Document.Blobs.empty,
       overlays.toList.map({ case (name, o) => name -> Document.Node.Perspective(true, Text.Perspective.empty, o) }))
 
-    /* the time limits are enforced by the prover; the watchdog only guards against a dead session */
+    /* the prover enforces time limits; this only guards against a dead session */
     val watchdog = Time.seconds(questions.map(_.timeout.seconds).max + 120)
     var answers: Answers = Map.empty
     var last = Time.now()
@@ -111,25 +86,25 @@ object Pide {
       Time.seconds(0.2).sleep()
       val state = session.get_state()
       for ((instance, q) <- placed if !answers.contains(q.key)) {
-        val results = state.command_results(state.snapshot(q.step.theory).version, q.step.goal)
-        results.iterator.collectFirst {
-          case (_, XML.Elem(Markup(Markup.RESULT, props @ Markup.Instance(i)), body)) if i == instance =>
-            Answer(Properties.get(props, "verdict").getOrElse("error"),
-              Properties.get(props, "ms").flatMap(Value.Long.unapply).getOrElse(0L),
-              cat_lines(split_lines(XML.content(body)).drop(1)))
+        state.command_results(state.snapshot(q.theory).version, q.at).iterator.collectFirst {
+          case (_, XML.Elem(Markup(Markup.RESULT, props @ Markup.Instance(i)), _)) if i == instance =>
+            def ms(name: String): Long = Properties.get(props, name).flatMap(Value.Long.unapply).getOrElse(0L)
+            Answer(Properties.get(props, "verdict").getOrElse("fails"), ms("ms"), ms("ms2"))
         }.foreach { a => answers += (q.key -> a); last = Time.now() }
       }
     }
-    if (answers.size < placed.length) progress.echo_warning((placed.length - answers.size) + " questions unanswered")
-    answers
+    if (answers.size < placed.length) progress.echo_warning((placed.length - answers.size).toString + " questions unanswered")
+    placed.map({ case (_, q) => q.key -> answers.getOrElse(q.key, unanswered) }).toMap
   }
 }
 
 
-/* A lint asks questions about `by` steps in rounds: each round is answered in parallel and the next
-  round sees all answers so far. When there are no new questions, report turns answers into findings. */
+/* fix: the checked new text of the lemma */
+sealed case class Finding(lint: String, lemma: Lemma, line: Int, message: String, fix: Option[String] = None)
+
+/* ask is called in rounds and sees all answers so far; report runs when it asks nothing new */
 abstract class Lint {
   def name: String
-  def ask(steps: List[Pide.Step], answers: Pide.Answers, options: Options): List[Pide.Question]
-  def report(steps: List[Pide.Step], answers: Pide.Answers, options: Options): List[Pide.Finding]
+  def ask(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Pide.Question]
+  def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding]
 }

@@ -1,10 +1,16 @@
 section "Isabelle_Linter"
 
+public option linter_timeout : real = 30
+  -- "seconds at most for one question to the prover"
+
+public option linter_factor : real = 5
+  -- "unused: an edited lemma gets this many times the original lemma's time (at least 1s)"
+
 public option faster_step_slow : real = 1.0
-  -- "only `by` steps that take at least this many seconds are tried"
+  -- "faster_step: only `by` steps that take at least this many seconds are tried"
 
 public option faster_step_speedup : real = 2
-  -- "a replacement must be this many times faster than the original step"
+  -- "faster_step: a replacement must be this many times faster than the original step"
 
-public option faster_step_timeout : real = 30
-  -- "seconds at most for checking one step as written"
+public option faster_step_runs : int = 3
+  -- "faster_step: the winner and the original are re-timed this many times; medians are compared"

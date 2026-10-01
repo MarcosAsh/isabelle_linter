@@ -1,10 +1,17 @@
 # isabelle_linter
 
-A linter for Isabelle that checks its suggestions with the prover. For now it has one lint,
-`faster_step`, which finds `by` steps that another method proves faster.
+A linter for Isabelle that checks every suggestion with the prover before showing it.
+
+- **unused** finds what a lemma doesn't need: facts, `have` steps, `apply` lines and assumptions.
+- **faster_step** finds `by` steps that another method proves faster.
 
 ```
-Example.thy:12: `by simp` checks in 2 ms instead of 27 ms for `by (metis append_assoc rev_append)`
+Unused.thy:18: [unused] not needed:
+  `have h2 : "rev [] = ([] :: nat list)"` and its proof (line 21)
+  fact `using h1` (line 22)
+  `have h1 : "length (xs @ ys) = length xs + length ys"` and its proof (line 20)
+
+Example.thy:9: [faster_step] `by (simp add: distrib_left)` takes 1 ms instead of 53 ms for `by (smt (verit) distrib_left)`
 ```
 
 ## Setup
@@ -19,16 +26,22 @@ isabelle scala_build
 ## Running it
 
 ```bash
-isabelle linter -d test -o faster_step_slow=0 Linter_Example   # the example
+isabelle linter -d test -o faster_step_slow=0 Linter_Example   # the examples
 isabelle linter -d DIR SESSION                                  # your own session
+isabelle linter -F -d DIR SESSION                               # also apply the fixes
 ```
 
-By default only steps over 1 second are tried. You can change that with
-`-o faster_step_slow=SECONDS`.
+`-l unused` or `-l faster_step` runs just one lint. By default faster_step only tries steps
+over 1 second (`-o faster_step_slow=SECONDS`).
+
+Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
+statement.
 
 ## How it works
 
-The theories get checked once in a PIDE session (the same machinery jEdit uses). Each "try
-method X on this step" goes to the prover as an overlay on the step's goal, so nothing else gets
-re-checked. The lint itself is in `src/lints/faster_step/`, and `src/core/pide.scala` has the
-small interface for writing other lints on top of it.
+The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,
+like "does this lemma still work without `h1`?", goes to the prover as an overlay, so only that
+lemma is re-run and nothing else gets re-checked.
+
+The lints are in `src/lints/`. A lint asks questions in rounds and turns the answers into
+findings; see `Lint` in `src/core/pide.scala` to write your own.

@@ -1,4 +1,5 @@
 session Linter_Example = HOL +
-  description "Example theory with slow `by` steps (isabelle linter -d test Linter_Example)."
+  description "Example theories (isabelle linter -d test Linter_Example)."
   theories
     Example
+    Unused
