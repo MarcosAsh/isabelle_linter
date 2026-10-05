@@ -40,9 +40,7 @@ object Pide {
         include_sessions = deps.sessions_structure.imports_topological_order, progress = progress)
     val session = resources.start_session(progress = progress)
     try {
-      val query_dir = Path.explode("$ISABELLE_LINTER_HOME/ml").absolute.implode
-      if (!session.use_theories(List("Linter_Query"), master_dir = query_dir).ok)
-        error("Failed to load ml/Linter_Query.thy")
+      load_queries(session, structure.build_requirements(List(logic)).contains("HOL"))
 
       val checked = session.use_theories(theories, progress = progress)
       val state = session.get_state()
@@ -63,6 +61,14 @@ object Pide {
       }
     }
     finally { session.stop() }
+  }
+
+  /* the print functions of ml/; Sledgehammer needs HOL */
+  private def load_queries(session: Headless.Session, hol: Boolean): Unit = {
+    val theories = "Linter_Query" :: (if (hol) List("Linter_Sledgehammer") else Nil)
+    val query_dir = Path.explode("$ISABELLE_LINTER_HOME/ml").absolute.implode
+    if (!session.use_theories(theories, master_dir = query_dir).ok)
+      error("Failed to load " + theories.mkString(", ") + " from ml/")
   }
 
   /* one round: all questions as overlays at once */

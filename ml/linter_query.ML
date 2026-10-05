@@ -5,27 +5,29 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_try  METHODS   run `by METHODS` on the goal
   linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians
   linter_run  TEXT      run an edited copy of the lemma from the state before it
+  linter_goal           describe the goal, for learning which methods close it
+
+Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
+when a question runs alone.
 *)
 
 structure Linter_Query =
 struct
 
-(*a timeout must never count as a failure*)
 fun timed limit f =
   let
-    val start = Time.now ();
+    val start = Timing.start ();
     val res = Exn.result (Timeout.apply limit f) ();
-    val ms = Time.toMilliseconds (Time.now () - start);
-  in
-    (case res of
-      Exn.Res () => ("closes", ms)
-    | Exn.Exn exn =>
-        if Exn.is_interrupt_proper exn then Exn.reraise exn
-        else
-          (case exn of
-            Timeout.TIMEOUT _ => ("timeout", ms)
-          | _ => (if String.isSubstring "Timeout" (Runtime.exn_message exn) then "timeout" else "fails", ms)))
-  end;
+  in (res, Timing.result start) end;
+
+(*a timeout must never count as a failure*)
+fun verdict (Exn.Res _) = "closes"
+  | verdict (Exn.Exn exn) =
+      if Exn.is_interrupt_proper exn then Exn.reraise exn
+      else
+        (case exn of
+          Timeout.TIMEOUT _ => "timeout"
+        | _ => if String.isSubstring "Timeout" (Runtime.exn_message exn) then "timeout" else "fails");
 
 fun parse_methods thy text =
   let
@@ -60,10 +62,64 @@ fun run_text st0 text () =
 fun median xs = nth (sort int_ord xs) (length xs div 2);
 
 
+(* goal features *)
+
+fun depth (t $ u) = Int.max (depth t, depth u) + 1
+  | depth (Abs (_, _, t)) = depth t + 1
+  | depth _ = 0;
+
+fun concl t =
+  (case Logic.strip_assums_concl t of
+    Const ("HOL.Trueprop", _) $ u => u
+  | u => u);
+
+fun head t =
+  (case Term.head_of (concl t) of
+    Const (c, _) => c
+  | Free _ => "free"
+  | Var _ => "var"
+  | _ => "other");
+
+(*in every goal, so they say nothing*)
+val noise = ["Pure.all", "Pure.imp", "HOL.Trueprop", "prop"];
+
+fun consts t = subtract (op =) noise (Term.add_const_names t []);
+fun tycons t =
+  subtract (op =) noise (Term.fold_types (Term.fold_subtypes (fn Type (c, _) => insert (op =) c | _ => I)) t []);
+
+fun local_facts ctxt =
+  Facts.dest_static false [Global_Theory.facts_of (Proof_Context.theory_of ctxt)]
+    (Proof_Context.facts_of ctxt);
+
+(*the first subgoal; the goal as text so features can be recomputed later*)
+fun goal_features state =
+  let
+    val {context = ctxt, facts, goal} = Proof.goal state;
+    val t = hd (Thm.prems_of goal);
+    fun count name xs = (name, string_of_int (length xs));
+    fun names name xs = (name, space_implode " " (sort_strings xs));
+  in
+    [count "subgoals" (Thm.prems_of goal),
+     ("size", string_of_int (Term.size_of_term t)),
+     ("depth", string_of_int (depth t)),
+     ("head", head t),
+     names "consts" (consts t),
+     names "types" (tycons t),
+     count "params" (Logic.strip_params t),
+     count "prems" (Logic.strip_assums_hyp t),
+     count "chained" facts,
+     count "local_facts" (local_facts ctxt),
+     ("goal", Pretty.pure_string_of (Syntax.pretty_term ctxt t))]
+  end;
+
+
 fun output instance verdict props =
   Output.result ((Markup.instanceN, instance) :: ("verdict", verdict) :: props) [verdict];
 
 fun ms name n = (name, string_of_int n);
+
+fun times ({elapsed, cpu, gc}: Timing.timing) =
+  map (fn (name, t) => ms name (Time.toMilliseconds t)) [("ms", elapsed), ("cpu", cpu), ("gc", gc)];
 
 fun register name check =
   Command.print_function name
@@ -78,20 +134,27 @@ fun register name check =
 
 val _ =
   register "linter_try" (fn limit => fn [text] => fn st =>
-    let val (verdict, t) = timed limit (run_by st text) in (verdict, [ms "ms" t]) end);
+    let val (res, t) = timed limit (run_by st text) in (verdict res, times t) end);
 
 val _ =
   register "linter_time" (fn limit => fn [n, a, b] => fn st =>
     let
-      val runs = map (fn _ => (timed limit (run_by st a), timed limit (run_by st b)))
-        (1 upto the (Int.fromString n));
+      fun run text = timed limit (run_by st text) |> apfst verdict;
+      val runs = map (fn _ => (run a, run b)) (1 upto the (Int.fromString n));
       val ok = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
+
+      fun med name f = ms name (median (map (Time.toMilliseconds o f) runs));
     in
-      (if ok then "closes" else "fails", [ms "ms" (median (map (#2 o #1) runs)), ms "ms2" (median (map (#2 o #2) runs))])
+      (if ok then "closes" else "fails",
+        [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
+         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2)])
     end);
 
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>
-    let val (verdict, t) = timed limit (run_text st text) in (verdict, [ms "ms" t]) end);
+    let val (res, t) = timed limit (run_text st text) in (verdict res, times t) end);
+
+val _ =
+  register "linter_goal" (fn _ => fn [] => fn st => ("goal", goal_features (Toplevel.proof_of st)));
 
 end;
