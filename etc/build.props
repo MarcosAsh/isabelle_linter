@@ -8,6 +8,7 @@ sources = \
   src/core/pide.scala \
   src/core/tool.scala \
   src/lints/faster_step/faster_step.scala \
-  src/lints/unused/unused.scala
+  src/lints/unused/unused.scala \
+  src/collect/collect.scala
 services = \
   isabelle.isabelle_linter.Tools

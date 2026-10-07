@@ -5,6 +5,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_try  METHODS   run `by METHODS` on the goal
   linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians
   linter_run  TEXT      run an edited copy of the lemma from the state before it
+  linter_times N M...    run each `by M` N times; ms0, ms1 ... are the medians of those that close
   linter_goal           describe the goal, for learning which methods close it
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
@@ -91,25 +92,28 @@ fun local_facts ctxt =
   Facts.dest_static false [Global_Theory.facts_of (Proof_Context.theory_of ctxt)]
     (Proof_Context.facts_of ctxt);
 
+fun count name xs = (name, string_of_int (length xs));
+fun names name xs = (name, space_implode " " (sort_strings xs));
+
+fun subgoal_features ctxt facts goal t =
+  [count "subgoals" (Thm.prems_of goal),
+   ("size", string_of_int (Term.size_of_term t)),
+   ("depth", string_of_int (depth t)),
+   ("head", head t),
+   names "consts" (consts t),
+   names "types" (tycons t),
+   count "params" (Logic.strip_params t),
+   count "prems" (Logic.strip_assums_hyp t),
+   count "chained" facts,
+   count "local_facts" (local_facts ctxt),
+   ("goal", Pretty.pure_string_of (Syntax.pretty_term ctxt t))];
+
 (*the first subgoal; the goal as text so features can be recomputed later*)
 fun goal_features state =
-  let
-    val {context = ctxt, facts, goal} = Proof.goal state;
-    val t = hd (Thm.prems_of goal);
-    fun count name xs = (name, string_of_int (length xs));
-    fun names name xs = (name, space_implode " " (sort_strings xs));
-  in
-    [count "subgoals" (Thm.prems_of goal),
-     ("size", string_of_int (Term.size_of_term t)),
-     ("depth", string_of_int (depth t)),
-     ("head", head t),
-     names "consts" (consts t),
-     names "types" (tycons t),
-     count "params" (Logic.strip_params t),
-     count "prems" (Logic.strip_assums_hyp t),
-     count "chained" facts,
-     count "local_facts" (local_facts ctxt),
-     ("goal", Pretty.pure_string_of (Syntax.pretty_term ctxt t))]
+  let val {context = ctxt, facts, goal} = Proof.goal state in
+    (case Thm.prems_of goal of
+      [] => [count "subgoals" []]
+    | t :: _ => subgoal_features ctxt facts goal t)
   end;
 
 
@@ -128,7 +132,12 @@ fun register name check =
         print_fn = fn _ => fn st =>
           let
             val limit = Time.fromMilliseconds (the (Int.fromString timeout_ms));
-            val (verdict, props) = check limit args st handle ERROR msg => ("fails", [("message", msg)]);
+            val (verdict, props) =
+              (case Exn.result (check limit args) st of
+                Exn.Res res => res
+              | Exn.Exn exn =>
+                  if Exn.is_interrupt exn then Exn.reraise exn
+                  else ("fails", [("message", Runtime.exn_message exn)]));
           in output instance verdict props end}
     | _ => NONE);
 
@@ -149,6 +158,19 @@ val _ =
         [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
          med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2)])
     end);
+
+(*the methods run one after another, never in parallel*)
+val _ =
+  register "linter_times" (fn limit => fn n :: methods => fn st =>
+    let
+      fun run text = timed limit (run_by st text);
+      fun median_ms text =
+        let val runs = map (fn _ => run text) (1 upto the (Int.fromString n)) in
+          if forall (fn (res, _) => verdict res = "closes") runs
+          then SOME (median (map (Time.toMilliseconds o #elapsed o #2) runs)) else NONE
+        end;
+      val medians = map_index (fn (i, m) => Option.map (ms ("ms" ^ string_of_int i)) (median_ms m)) methods;
+    in ("closes", map_filter I medians) end);
 
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>

@@ -10,24 +10,27 @@ object Pide {
   sealed case class Question(key: String, theory: Document.Node.Name, at: Command, function: String,
       args: List[String], timeout: Time)
 
-  sealed case class Answer(verdict: String, ms: Long, ms2: Long) {
+  /* all properties of the result message */
+  sealed case class Answer(verdict: String, props: Properties.T = Nil) {
     def closes: Boolean = verdict == "closes"
+    def get(name: String): Option[String] = Properties.get(props, name)
+    def long(name: String): Option[Long] = get(name).flatMap(Value.Long.unapply)
+    def ms: Long = long("ms").getOrElse(0L)
+    def ms2: Long = long("ms2").getOrElse(0L)
   }
 
   type Answers = Map[String, Answer]
 
   /* never counts as closed */
-  val unanswered: Answer = Answer("unanswered", 0, 0)
+  val unanswered: Answer = Answer("unanswered")
 
 
-  /* each lint asks in rounds until it has no new questions */
-  def run(
-    options: Options,
-    session_name: String,
-    lints: List[Lint],
-    dirs: List[Path] = Nil,
-    progress: Progress = new Progress
-  ): List[Finding] = {
+  /* a checked session with the queries loaded; dir is the session's directory */
+  sealed case class Checked(session: Headless.Session, lemmas: List[Lemma], hol: Boolean, dir: Path)
+
+  /* check the session once, read its lemmas, run body, stop the session */
+  def check[A](options: Options, session_name: String, dirs: List[Path], progress: Progress)(
+      body: Checked => A): A = {
     val structure = Sessions.load_structure(options, dirs = dirs)
     val deps = Sessions.deps(structure.selection(session_name), progress = progress)
     val theories = deps(session_name).proper_session_theories.map(_.theory)
@@ -40,27 +43,47 @@ object Pide {
         include_sessions = deps.sessions_structure.imports_topological_order, progress = progress)
     val session = resources.start_session(progress = progress)
     try {
-      load_queries(session, structure.build_requirements(List(logic)).contains("HOL"))
+      val hol = structure.build_requirements(List(logic)).contains("HOL")
+      load_queries(session, hol)
 
       val checked = session.use_theories(theories, progress = progress)
       val state = session.get_state()
-      val lemmas = checked.nodes.flatMap({ case (name, _) => Lemma.read(state, checked.snapshot(name)) })
-      val ok = lemmas.filter(_.ok)
-      progress.echo(ok.length.toString + " of " + lemmas.length + " lemmas check")
+      val own = checked.nodes.map(_._1).filter(name => theories.contains(name.theory))
+      val lemmas = own.flatMap(name => Lemma.read(state, checked.snapshot(name)))
+      progress.echo(lemmas.count(_.ok).toString + " of " + lemmas.length + " lemmas check")
 
+      body(Checked(session, lemmas, hol, structure(session_name).dir))
+    }
+    finally { session.stop() }
+  }
+
+  /* each lint asks in rounds until it has no new questions */
+  def run(
+    options: Options,
+    session_name: String,
+    lints: List[Lint],
+    dirs: List[Path] = Nil,
+    progress: Progress = new Progress
+  ): List[Finding] =
+    check(options, session_name, dirs, progress) { checked =>
+      val ok = checked.lemmas.filter(_.ok)
       lints.flatMap { lint =>
-        var answers: Answers = Map.empty
-        def next(): List[Question] = lint.ask(ok, answers, options).filterNot(q => answers.contains(q.key))
-        var round = next()
-        while (round.nonEmpty) {
-          progress.echo(lint.name + ": asking " + round.length + " questions")
-          answers ++= ask(session, round, progress)
-          round = next()
-        }
+        val answers = rounds(checked.session, lint.name, progress)(a => lint.ask(ok, a, options))
         lint.report(ok, answers, options)
       }
     }
-    finally { session.stop() }
+
+  /* ask until next has no new questions */
+  def rounds(session: Headless.Session, name: String, progress: Progress)(
+      next: Answers => List[Question]): Answers = {
+    var answers: Answers = Map.empty
+    var round = next(answers).filterNot(q => answers.contains(q.key))
+    while (round.nonEmpty) {
+      progress.echo(name + ": asking " + round.length + " questions")
+      answers ++= ask(session, round, progress)
+      round = next(answers).filterNot(q => answers.contains(q.key))
+    }
+    answers
   }
 
   /* the print functions of ml/; Sledgehammer needs HOL */
@@ -72,7 +95,7 @@ object Pide {
   }
 
   /* one round: all questions as overlays at once */
-  private def ask(session: Headless.Session, questions: List[Question], progress: Progress): Answers = {
+  def ask(session: Headless.Session, questions: List[Question], progress: Progress): Answers = {
     val placed = questions.map(q => Document_ID.make().toString -> q)
     val overlays =
       placed.foldLeft(Map.empty[Document.Node.Name, Document.Node.Overlays]) {
@@ -94,8 +117,7 @@ object Pide {
       for ((instance, q) <- placed if !answers.contains(q.key)) {
         state.command_results(state.snapshot(q.theory).version, q.at).iterator.collectFirst {
           case (_, XML.Elem(Markup(Markup.RESULT, props @ Markup.Instance(i)), _)) if i == instance =>
-            def ms(name: String): Long = Properties.get(props, name).flatMap(Value.Long.unapply).getOrElse(0L)
-            Answer(Properties.get(props, "verdict").getOrElse("fails"), ms("ms"), ms("ms2"))
+            Answer(Properties.get(props, "verdict").getOrElse("fails"), props)
         }.foreach { a => answers += (q.key -> a); last = Time.now() }
       }
     }
