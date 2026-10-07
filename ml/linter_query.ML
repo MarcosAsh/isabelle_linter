@@ -5,7 +5,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_try  METHODS   run `by METHODS` on the goal
   linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians
   linter_run  TEXT      run an edited copy of the lemma from the state before it
-  linter_times N M...    run each `by M` N times; ms0, ms1 ... are the medians of those that close
+  linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close
   linter_goal           describe the goal, for learning which methods close it
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
