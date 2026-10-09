@@ -60,9 +60,7 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
         case (r :: rs, s) if s.start <= r.stop => Text.Range(r.start, r.stop max s.stop) :: rs
         case (rs, s) => s :: rs
       }
-    merged.foldLeft(source)((s, r) => s.substring(0, r.start - start) + s.substring(r.stop - start))
-      .replaceAll(Syntax.empty_keyword, "").replaceAll(Syntax.empty_section, "")
-      .replaceAll(Syntax.bare_method, "$1 $2")
+    Syntax.tidy(merged.foldLeft(source)((s, r) => s.substring(0, r.start - start) + s.substring(r.stop - start)))
   }
 
 

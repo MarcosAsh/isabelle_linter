@@ -19,12 +19,15 @@ object Faster_Step extends Lint {
   /* they must close every subgoal left by the first method */
   val closers: List[String] = List("simp_all", "auto", "(fastforce+)", "(force+)", "(blast+)")
 
-  /* the standard methods, and some that get the step's own facts */
-  def candidates(step: Step): List[String] =
-    step.split match {
-      case Some((first, _)) => closing(step, first)
-      case None => whole(step)
-    }
+  /* the standard methods, some with the step's own facts, and the step without each fact */
+  def candidates(step: Step): List[String] = {
+    val swaps =
+      step.split match {
+        case Some((first, _)) => closing(step, first)
+        case None => whole(step)
+      }
+    (swaps ::: dropping(step)).filterNot(_ == step.methods).distinct
+  }
 
   /* keep `induction` or `cases`, change what closes the subgoals */
   def closing(step: Step, first: String): List[String] = {
@@ -34,19 +37,56 @@ object Faster_Step extends Lint {
       else List("(simp_all add: " + facts + ")", "(auto simp: " + facts + ")",
         "((fastforce simp: " + facts + ")+)", "((force simp: " + facts + ")+)")
 
-    (with_facts ::: closers).map(first + " " + _).filterNot(_ == step.methods).distinct
+    (with_facts ::: closers).map(first + " " + _)
   }
 
-  def whole(step: Step): List[String] = {
+  def whole(step: Step): List[String] = fact_methods(step) ::: methods
+
+  def fact_methods(step: Step): List[String] = {
     val facts = step.facts.mkString(" ")
-    val with_facts =
-      if (facts.isEmpty) Nil
-      else
-        List("metis " + facts, "simp add: " + facts, "auto simp: " + facts, "fastforce simp: " + facts,
-          "force simp: " + facts, "blast intro: " + facts).map("(" + _ + ")")
-
-    (with_facts ::: methods).filterNot(_ == step.methods).distinct
+    if (facts.isEmpty) Nil
+    else
+      List("metis " + facts, "simp add: " + facts, "auto simp: " + facts, "fastforce simp: " + facts,
+        "force simp: " + facts, "blast intro: " + facts).map("(" + _ + ")")
   }
+
+  /* the step's own methods without one of their facts */
+  def dropping(step: Step): List[String] = {
+    val start = step.cmd.body.head.range.start
+
+    def cut(fact: List[Tok]): String = {
+      val before = step.methods.substring(0, fact.head.range.start - start).stripTrailing
+      val after = step.methods.substring(fact.last.range.stop - start).stripLeading
+      val joined = if (after.startsWith(")")) before + after else before + " " + after
+      Syntax.tidy("by " + joined).stripPrefix("by ")
+    }
+
+    Syntax.method_facts(step.cmd.body).map(cut)
+  }
+
+
+  /* `by M1 M2` to `by M1 (C1, C2, ...)`, with the fastest closer for each subgoal of M1 */
+
+  def subgoal_closers(step: Step): List[String] = fact_methods(step) ::: methods
+
+  def per_subgoal(step: Step, first: String, answer: Pide.Answer): Option[String] = {
+    val closers = subgoal_closers(step)
+    val n = answer.long("n").getOrElse(0L).toInt
+    val chosen = (1 to n).toList.map(i => answer.long("sub" + i).map(j => closers(j.toInt)))
+
+    if (n < 2 || chosen.exists(_.isEmpty)) None
+    else {
+      val texts = chosen.flatten
+      Some(first + " (" + (texts.init.map(one_goal) :+ texts.last).mkString(", ") + ")")
+    }
+  }
+
+  /* auto works on every subgoal; [1] keeps it to the first, and needs parentheses (`auto[1]` is
+    auto with an argument) */
+  def one_goal(method: String): String =
+    if (method == "auto") "(auto)[1]"
+    else if (method.startsWith("(auto ")) method + "[1]"
+    else method
 
 
   /* Per step: time it, try the candidates with the original time over the speed-up as their limit,
@@ -61,8 +101,9 @@ object Faster_Step extends Lint {
       case Some(a) if !a.closes || a.ms < options.real("faster_step_slow") * 1000 => Right(None)
       case Some(a) =>
         val limit = Time.ms((a.ms / speedup).toLong max 1L)
-        val tries = candidates(step).map(m => m -> try_by(lemma, step, m, limit))
-        val missing = tries.map(_._2).filterNot(q => answers.contains(q.key))
+        val split = step.split.map({ case (first, _) => first -> subgoals(lemma, step, first, limit) })
+        val tries = edits(step, split, answers).map(m => m -> try_by(lemma, step, m, limit))
+        val missing = (split.map(_._2).toList ::: tries.map(_._2)).filterNot(q => answers.contains(q.key))
 
         if (missing.nonEmpty) Left(missing)
         else {
@@ -89,6 +130,21 @@ object Faster_Step extends Lint {
       case _ => Right(None)
     }
   }
+
+  /* the per-subgoal edit joins the others once its question is answered */
+  private def edits(step: Step, split: Option[(String, Pide.Question)], answers: Pide.Answers): List[String] = {
+    val subgoal_edit =
+      for {
+        (first, q) <- split
+        answer <- answers.get(q.key)
+        method <- per_subgoal(step, first, answer)
+      } yield method
+    (candidates(step) ::: subgoal_edit.toList).filterNot(_ == step.methods).distinct
+  }
+
+  private def subgoals(lemma: Lemma, step: Step, first: String, limit: Time): Pide.Question =
+    Pide.Question(key(lemma, step, "subgoals"), lemma.theory, step.goal.command, "linter_subgoals",
+      first :: subgoal_closers(step), limit)
 
   private def key(lemma: Lemma, step: Step, what: String): String =
     lemma.key + ":" + step.cmd.offset + ":" + what

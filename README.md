@@ -3,7 +3,8 @@
 A linter for Isabelle that checks every suggestion with the prover before showing it.
 
 - **unused** finds what a lemma doesn't need: facts, `have` steps, `apply` lines and assumptions.
-- **faster_step** finds `by` steps that another method proves faster.
+- **faster_step** finds `by` steps that another method proves faster. It tries other methods,
+  the step without each of its facts, and for `by M1 M2` the fastest method for each subgoal.
 
 ```
 Unused.thy:18: [unused] not needed:

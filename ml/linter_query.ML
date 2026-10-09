@@ -7,6 +7,8 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_run  TEXT      run an edited copy of the lemma from the state before it
   linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close
   linter_goal           describe the goal, for learning which methods close it
+  linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
+                        the fastest C (as an index) and its time, for the subgoals some C closes
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone.
@@ -61,6 +63,34 @@ fun run_text st0 text () =
   end;
 
 fun median xs = nth (sort int_ord xs) (length xs div 2);
+
+
+(* subgoals *)
+
+fun apply_text text state =
+  Proof.apply (#1 (parse_methods (Proof.theory_of state) text)) state |> Seq.the_result "";
+
+fun nsubgoals state = Thm.nprems_of (#goal (Proof.goal state));
+
+(*restricted to the first subgoal, which it must close*)
+fun close_first text state () =
+  let val n = nsubgoals state in
+    if nsubgoals (apply_text ("(" ^ text ^ ")[1]") state) = n - 1 then ()
+    else error "Subgoal not closed"
+  end;
+
+(*each later try only gets the best time so far; under 1 ms Timeout.apply has no limit at all*)
+fun fastest limit closers state =
+  fold (fn (i, text) => fn best =>
+    let
+      val budget =
+        (case best of SOME (_, t) => Time.min (limit, t) | NONE => limit)
+        |> curry Time.max (Time.fromMilliseconds 1);
+      val (res, t) = timed budget (close_first text state);
+    in
+      if verdict res = "closes" andalso (case best of SOME (_, b) => #elapsed t < b | NONE => true)
+      then SOME (i, #elapsed t) else best
+    end) (map_index I closers) NONE;
 
 
 (* goal features *)
@@ -178,5 +208,17 @@ val _ =
 
 val _ =
   register "linter_goal" (fn _ => fn [] => fn st => ("goal", goal_features (Toplevel.proof_of st)));
+
+val _ =
+  register "linter_subgoals" (fn limit => fn first :: closers => fn st =>
+    let
+      val after = apply_text first (Toplevel.proof_of st);
+      val n = nsubgoals after;
+
+      fun subgoal i =
+        (case fastest limit closers (Proof.prefer i after) of
+          SOME (j, t) => [("sub" ^ string_of_int i, string_of_int j), ms ("ms" ^ string_of_int i) (Time.toMilliseconds t)]
+        | NONE => []);
+    in ("closes", ms "n" n :: maps subgoal (1 upto n)) end);
 
 end;

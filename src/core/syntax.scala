@@ -29,6 +29,10 @@ object Syntax {
   /* `by (simp)` left after removing all its facts, to `by simp` */
   val bare_method: String = "\\b(by|apply)\\s+\\((\\w+)\\)"
 
+  /* text after a deletion */
+  def tidy(s: String): String =
+    s.replaceAll(empty_keyword, "").replaceAll(empty_section, "").replaceAll(bare_method, "$1 $2")
+
   /* a fact: name, optional (selection), optional [attributes] */
 
   def is_fact_start(t: Tok): Boolean =
