@@ -32,8 +32,9 @@ sealed case class Cmd(command: Command, offset: Int) {
 /* something removable from a lemma */
 sealed case class Piece(kind: String, text: String, range: Text.Range, line: Int)
 
-/* a `by` step; goal is the command before it */
-sealed case class Step(goal: Cmd, cmd: Cmd, methods: String, facts: List[String])
+/* a `by` step; goal is the command before it; split is `by M1 M2` as (M1, M2) */
+sealed case class Step(goal: Cmd, cmd: Cmd, methods: String, facts: List[String],
+  split: Option[(String, String)] = None)
 
 
 sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Document,
@@ -71,8 +72,15 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
     for ((goal, cmd) <- cmds.zip(cmds.tail) if cmd.name == "by") yield {
       val methods = text.substring(cmd.body.head.range.start, cmd.body.last.range.stop)
       val facts = Syntax.method_facts(cmd.body).map(_.map(_.source).mkString)
-      Step(goal, cmd, methods, facts)
+      Step(goal, cmd, methods, facts, split(cmd.body))
     }
+
+  private def split(body: List[Tok]): Option[(String, String)] = {
+    val (first, rest) =
+      if (body.head.is("(")) Syntax.take_group(body, "(", ")") else (List(body.head), body.tail)
+    def source(toks: List[Tok]) = text.substring(toks.head.range.start, toks.last.range.stop)
+    if (rest.isEmpty) None else Some((source(first), source(rest)))
+  }
 
 
   /* pieces, in text order */

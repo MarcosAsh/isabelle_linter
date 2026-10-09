@@ -29,4 +29,10 @@ lemma l8: "finite A \<Longrightarrow> card (A \<union> B) \<le> card A + card B"
 lemma l9: "(\<Sum>i<n. (2::nat) * i + 1) = n^2"
   by (induct n) (auto simp: power2_eq_square)
 
+lemma l10: "sum_list (map (\<lambda>x. x + 1) xs) = sum_list xs + length (xs::nat list)"
+  by (induction xs) (force+)
+
+lemma l11: "length (filter P (xs @ ys)) = length (filter P xs) + length (filter P ys)"
+  by (induction xs) (fastforce+)
+
 end

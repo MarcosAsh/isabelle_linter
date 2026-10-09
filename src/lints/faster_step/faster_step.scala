@@ -16,8 +16,28 @@ object Faster_Step extends Lint {
     List("simp", "auto", "blast", "fast", "fastforce", "force", "metis", "meson", "linarith", "presburger",
       "argo", "algebra")
 
+  /* they must close every subgoal left by the first method */
+  val closers: List[String] = List("simp_all", "auto", "(fastforce+)", "(force+)", "(blast+)")
+
   /* the standard methods, and some that get the step's own facts */
-  def candidates(step: Step): List[String] = {
+  def candidates(step: Step): List[String] =
+    step.split match {
+      case Some((first, _)) => closing(step, first)
+      case None => whole(step)
+    }
+
+  /* keep `induction` or `cases`, change what closes the subgoals */
+  def closing(step: Step, first: String): List[String] = {
+    val facts = step.facts.mkString(" ")
+    val with_facts =
+      if (facts.isEmpty) Nil
+      else List("(simp_all add: " + facts + ")", "(auto simp: " + facts + ")",
+        "((fastforce simp: " + facts + ")+)", "((force simp: " + facts + ")+)")
+
+    (with_facts ::: closers).map(first + " " + _).filterNot(_ == step.methods).distinct
+  }
+
+  def whole(step: Step): List[String] = {
     val facts = step.facts.mkString(" ")
     val with_facts =
       if (facts.isEmpty) Nil
