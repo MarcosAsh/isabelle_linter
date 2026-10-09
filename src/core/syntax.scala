@@ -12,6 +12,8 @@ object Syntax {
   /* go with the `have` after them */
   val lead_ins: Set[String] = Set("then", "from", "with", "moreover")
 
+  val calculation: Set[String] = Set("also", "finally", "moreover", "ultimately")
+
   val fact_methods: Set[String] = Set("metis", "meson", "smt", "argo")
   val fact_sections: Set[String] = Set("add", "simp", "intro", "elim", "dest", "iff", "split", "cong", "only")
 
@@ -23,6 +25,9 @@ object Syntax {
 
   /* like `add:` before a closing paren */
   val empty_section: String = "\\s+\\w+!?:\\s*(?=\\))"
+
+  /* `by (simp)` left after removing all its facts, to `by simp` */
+  val bare_method: String = "\\b(by|apply)\\s+\\((\\w+)\\)"
 
   /* a fact: name, optional (selection), optional [attributes] */
 

@@ -46,7 +46,10 @@ object Pide {
 
       val checked = session.use_theories(theories, progress = progress)
       val state = session.get_state()
-      val lemmas = checked.nodes.flatMap({ case (name, _) => Lemma.read(state, checked.snapshot(name)) })
+
+      /* imported theories outside a heap are loaded too; lint only the session's own */
+      val own = checked.nodes.map(_._1).filter(name => theories.contains(name.theory))
+      val lemmas = own.flatMap(name => Lemma.read(state, checked.snapshot(name)))
       val ok = lemmas.filter(_.ok)
       progress.echo(ok.length.toString + " of " + lemmas.length + " lemmas check")
 

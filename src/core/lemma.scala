@@ -61,6 +61,7 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
       }
     merged.foldLeft(source)((s, r) => s.substring(0, r.start - start) + s.substring(r.stop - start))
       .replaceAll(Syntax.empty_keyword, "").replaceAll(Syntax.empty_section, "")
+      .replaceAll(Syntax.bare_method, "$1 $2")
   }
 
 
@@ -121,11 +122,21 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
       (cmd, i) <- cmds.zipWithIndex
       if cmd.name == "have" || cmd.name == "hence"
       end <- Lemma.goal_end(cmds, i)
+      lead_in = cmds.take(i).reverse.takeWhile(c => Syntax.lead_ins(c.name))
+      if !in_calculation(lead_in, i - lead_in.length, end)
     } yield {
-      val lead_in = cmds.take(i).reverse.takeWhile(c => Syntax.lead_ins(c.name)).length
-      val toks = cmds.slice(i - lead_in, end + 1).flatMap(_.tokens)
+      val toks = cmds.slice(i - lead_in.length, end + 1).flatMap(_.tokens)
       piece("have", toks).copy(text = cmd.tokens.map(_.source).mkString(" "))
     }
+
+  /* deleting a step of a calculation leaves its `also`, `finally` ... dangling; only a
+    `moreover` step can go, together with its `moreover` */
+  private def in_calculation(lead_in: List[Cmd], first: Int, last: Int): Boolean = {
+    def name(i: Int): String = cmds.lift(i).map(_.name).getOrElse("")
+    val chain_before = Syntax.calculation(name(first - 1))
+    val chain_after = Syntax.calculation(name(last + 1)) && !lead_in.exists(_.name == "moreover")
+    chain_before || chain_after
+  }
 
   private def apply_pieces: List[Piece] =
     cmds.filter(_.name == "apply").map(cmd => piece("apply", cmd.tokens))

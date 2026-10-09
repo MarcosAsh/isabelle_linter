@@ -8,7 +8,7 @@ text \<open>Each lemma says in a comment what the unused lint should find.\<clos
 lemma u1: "rev (rev xs) = xs"
   using append_Nil by (simp add: rev_append)
 
-(* both assumptions, reported but not removed; and `using assms` *)
+(* `"y = y"`, reported but not removed; and `using assms` (without `x > 0`, x has no type) *)
 lemma u2:
   assumes "x > (0::nat)" and "y = y"
   shows "x + 0 = x"
