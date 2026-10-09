@@ -9,6 +9,7 @@ sources = \
   src/core/tool.scala \
   src/lints/faster_step/faster_step.scala \
   src/lints/unused/unused.scala \
-  src/collect/collect.scala
+  src/collect/collect.scala \
+  src/census/census.scala
 services = \
   isabelle.isabelle_linter.Tools
