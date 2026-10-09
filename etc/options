@@ -14,3 +14,18 @@ public option faster_step_speedup : real = 2
 
 public option faster_step_runs : int = 3
   -- "faster_step: the winner and the original are re-timed this many times; medians are compared"
+
+public option collect_timeout : real = 2
+  -- "linter_collect: seconds each method gets on a step"
+
+public option collect_runs : int = 3
+  -- "linter_collect: a method that closes is re-timed this many times; the median is kept"
+
+public option collect_parallel : int = 4
+  -- "linter_collect: steps re-timed at the same time"
+
+public option collect_batch : int = 100
+  -- "linter_collect: steps whose methods are tried at the same time"
+
+public option collect_sledgehammer : real = 0
+  -- "linter_collect: seconds for Sledgehammer on each step, 0 to skip"

@@ -37,6 +37,22 @@ over 1 second (`-o faster_step_slow=SECONDS`).
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
 
+## Collecting data
+
+`isabelle linter_collect` records, for every `by` step of a session, the goal and which
+methods close it and how fast. It is the data for learning which method to try first.
+
+```bash
+isabelle linter_collect -d ~/afp/thys -O Huffman.jsonl Huffman    # one AFP entry; list all its sessions
+```
+
+Each line is one step: the goal's features (head constant, constants, size, ...), and for every
+method whether it closes the goal within 2 seconds (`-o collect_timeout`), with the median of 3
+re-timed runs for the ones that do. The methods that close are re-timed a few steps at a time, so
+the times are not distorted by the rest of the run. `-o collect_sledgehammer=SECONDS` also runs
+Sledgehammer on each step. If the output file exists, the command does nothing, so a loop over
+many entries can be restarted.
+
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,
