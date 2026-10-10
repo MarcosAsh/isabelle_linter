@@ -20,6 +20,11 @@ object Census {
       file <- File.read_dir(log) if file.endsWith(".db")
     } yield file.stripSuffix(".db")).distinct.sorted
 
+  /* the sessions defined in select_dirs, as isabelle build -D */
+  def selected(options: Options, dirs: List[Path], select_dirs: List[Path]): List[String] =
+    if (select_dirs.isEmpty) Nil
+    else Sessions.load_structure(options, dirs = dirs, select_dirs = select_dirs).build_selection(Sessions.Selection())
+
   def read_session(store: Store, session: String): (Double, List[Timing]) =
     using(store.open_database(session)) { db =>
       val timing = store.read_session_timing(db, session)
@@ -99,6 +104,8 @@ object Census {
   val census_tool: Isabelle_Tool =
     Isabelle_Tool("linter_census", "where checking time goes, from the build logs", Scala_Project.here,
       { args =>
+        val dirs = new scala.collection.mutable.ListBuffer[Path]
+        val select_dirs = new scala.collection.mutable.ListBuffer[Path]
         var output: Option[Path] = None
         var top = 30
         var options = Options.init()
@@ -107,23 +114,29 @@ object Census {
 Usage: isabelle linter_census [OPTIONS] [SESSIONS]
 
   Options are:
+    -D DIR       include session directory and select its sessions
     -O FILE      also write every stored command timing to FILE (TSV)
+    -d DIR       include session directory
     -n N         show the N slowest commands (default: 30)
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
 
-  Read the command timings that isabelle build stored for SESSIONS (default:
-  every session with a log database) and show where the time goes. Only
+  Read the command timings that isabelle build stored for SESSIONS and the
+  sessions of each -D DIR (default: every session with a log database) and
+  show where the time goes. Only
   commands slower than build_timing_threshold are stored, so build with
   -o build_timing_threshold=0.01 first.
 """,
+          "D:" -> (arg => select_dirs += Path.explode(arg)),
           "O:" -> (arg => output = Some(Path.explode(arg))),
+          "d:" -> (arg => dirs += Path.explode(arg)),
           "n:" -> (arg => top = Value.Int.parse(arg)),
           "o:" -> (arg => options = options + arg))
 
         val store = Store(options)
-        val names = getopts(args) match {
-          case Nil => logged_sessions(store)
-          case ss => ss
+        val logged = logged_sessions(store)
+        val names = (getopts(args) ::: selected(options, dirs.toList, select_dirs.toList)) match {
+          case Nil => logged
+          case ss => ss.distinct.filter(logged.contains)
         }
 
         val progress = new Console_Progress()

@@ -10,6 +10,7 @@ sources = \
   src/lints/faster_step/faster_step.scala \
   src/lints/unused/unused.scala \
   src/collect/collect.scala \
-  src/census/census.scala
+  src/census/census.scala \
+  src/retime/retime.scala
 services = \
   isabelle.isabelle_linter.Tools

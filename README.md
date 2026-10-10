@@ -54,6 +54,18 @@ the times are not distorted by the rest of the run. `-o collect_sledgehammer=SEC
 Sledgehammer on each step. If the output file exists, the command does nothing, so a loop over
 many entries can be restarted.
 
+## Where the time goes
+
+`isabelle linter_census` reads the command timings that `isabelle build` stored and shows
+which commands the checking time goes to. `isabelle linter_retime` then times the slowest `by`
+steps again, one at a time, since build timings come from a loaded machine.
+
+```bash
+isabelle build -d AFP -D AFP/Huffman -o build_timing_threshold=0.01
+isabelle linter_census -d AFP -D AFP/Huffman -O timings.tsv
+taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.tsv
+```
+
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,
