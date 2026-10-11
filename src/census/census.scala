@@ -67,13 +67,20 @@ object Census {
   def share(part: Double, all: Double): String =
     if (all == 0) "-" else String.format("%.1f%%", 100 * part / all)
 
+  /* a theory outside every heap is checked again by each session that imports it; keep each
+    command once, with its lowest time, the one least distorted by load */
+  def distinct(sessions: List[(String, Double, List[Timing])]): List[Timing] =
+    sessions.flatMap(_._3).groupBy(t => (t.file, t.offset)).values.map(_.minBy(_.seconds)).toList
+
   def report(sessions: List[(String, Double, List[Timing])], top: Int, progress: Progress): Unit = {
     val cpu = sessions.map(_._2).sum
-    val timings = sessions.flatMap(_._3).sortBy(-_.seconds)
+    val all = sessions.map(_._3.length).sum
+    val timings = distinct(sessions).sortBy(-_.seconds)
     val stored = timings.map(_.seconds).sum
 
     progress.echo(sessions.length + " sessions, " + String.format("%.0f", cpu) + " s CPU, " +
-      timings.length + " stored commands, " + String.format("%.0f", stored) + " s (" + share(stored, cpu) + " of CPU)")
+      all + " stored commands, " + timings.length + " distinct, " + String.format("%.0f", stored) + " s (" +
+      share(stored, cpu) + " of CPU)")
 
     progress.echo("\nby command:")
     for ((name, ts) <- timings.groupBy(_.name).toList.sortBy(-_._2.map(_.seconds).sum).take(12)) {
@@ -95,7 +102,7 @@ object Census {
   def write_tsv(path: Path, sessions: List[(String, Double, List[Timing])]): Unit = {
     val clean = (s: String) => s.replace('\t', ' ')
     val lines =
-      for ((_, _, ts) <- sessions; t <- ts)
+      for (t <- distinct(sessions).sortBy(t => (t.session, t.file, t.offset)))
       yield List(t.session, t.file, t.offset.toString, t.name, t.seconds.toString, clean(t.text)).mkString("\t")
     File.write(path, ("session\tfile\toffset\tcommand\tseconds\ttext" :: lines).mkString("", "\n", "\n"))
   }
@@ -122,9 +129,9 @@ Usage: isabelle linter_census [OPTIONS] [SESSIONS]
 
   Read the command timings that isabelle build stored for SESSIONS and the
   sessions of each -D DIR (default: every session with a log database) and
-  show where the time goes. Only
-  commands slower than build_timing_threshold are stored, so build with
-  -o build_timing_threshold=0.01 first.
+  show where the time goes. A command checked by several sessions counts
+  once. Only commands slower than build_timing_threshold are stored, so build
+  with -o build_timing_threshold=0.01 first.
 """,
           "D:" -> (arg => select_dirs += Path.explode(arg)),
           "O:" -> (arg => output = Some(Path.explode(arg))),

@@ -28,9 +28,10 @@ object Pide {
   /* a checked session with the queries loaded; dir is the session's directory */
   sealed case class Checked(session: Headless.Session, lemmas: List[Lemma], hol: Boolean, dir: Path)
 
-  /* check the session once, read its lemmas, run body, stop the session */
-  def check[A](options: Options, session_name: String, dirs: List[Path], progress: Progress)(
-      body: Checked => A): A = {
+  /* check the session once, read its lemmas, run body, stop the session; imported: also the
+    lemmas of imported theories that no heap holds */
+  def check[A](options: Options, session_name: String, dirs: List[Path], progress: Progress,
+      imported: Boolean = false)(body: Checked => A): A = {
     val structure = Sessions.load_structure(options, dirs = dirs)
     val deps = Sessions.deps(structure.selection(session_name), progress = progress)
     val theories = deps(session_name).proper_session_theories.map(_.theory)
@@ -50,7 +51,7 @@ object Pide {
       val state = session.get_state()
 
       /* imported theories outside a heap are loaded too; lint only the session's own */
-      val own = checked.nodes.map(_._1).filter(name => theories.contains(name.theory))
+      val own = checked.nodes.map(_._1).filter(name => imported || theories.contains(name.theory))
       val lemmas = own.flatMap(name => Lemma.read(state, checked.snapshot(name)))
       progress.echo(lemmas.count(_.ok).toString + " of " + lemmas.length + " lemmas check")
 

@@ -43,7 +43,7 @@ object Retime {
   /* each step alone, so the runs do not compete */
   def retime_session(options: Options, session_name: String, rows: List[Row], dirs: List[Path],
       progress: Progress): List[String] =
-    Pide.check(options, session_name, dirs, progress) { checked =>
+    Pide.check(options, session_name, dirs, progress, imported = true) { checked =>
       val runs = options.int("retime_runs")
       for ((row, found) <- find_steps(checked, rows)) yield {
         val (verdict, median) =
