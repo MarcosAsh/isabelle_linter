@@ -3,10 +3,14 @@
 Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, TIMEOUT_MS, then
 
   linter_try  METHODS   run `by METHODS` on the goal
-  linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians
+  linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians, as are
+                        cpu, cpu2 and gc, gc2
   linter_run  TEXT      run an edited copy of the lemma from the state before it
-  linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close
+  linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
+                        cpu0, gc0 ... the medians of their cpu and gc
   linter_goal           describe the goal, for learning which methods close it
+  linter_profile M      run `by M` once under Poly/ML's time profiler for this thread; the
+                        profile arrives as a tracing message on the command
   linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
                         the fastest C (as an index) and its time, for the subgoals some C closes
 
@@ -186,7 +190,8 @@ val _ =
     in
       (if ok then "closes" else "fails",
         [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
-         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2)])
+         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2),
+         med "gc" (#gc o #2 o #1), med "gc2" (#gc o #2 o #2)])
     end);
 
 (*the methods run one after another, never in parallel*)
@@ -194,17 +199,25 @@ val _ =
   register "linter_times" (fn limit => fn n :: methods => fn st =>
     let
       fun run text = timed limit (run_by st text);
-      fun median_ms text =
-        let val runs = map (fn _ => run text) (1 upto the (Int.fromString n)) in
+      fun medians (i, text) =
+        let
+          val runs = map (fn _ => run text) (1 upto the (Int.fromString n));
+          fun med name f = ms (name ^ string_of_int i) (median (map (Time.toMilliseconds o f o #2) runs));
+        in
           if forall (fn (res, _) => verdict res = "closes") runs
-          then SOME (median (map (Time.toMilliseconds o #elapsed o #2) runs)) else NONE
+          then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc] else []
         end;
-      val medians = map_index (fn (i, m) => Option.map (ms ("ms" ^ string_of_int i)) (median_ms m)) methods;
-    in ("closes", map_filter I medians) end);
+    in ("closes", maps medians (map_index I methods)) end);
 
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>
     let val (res, t) = timed limit (run_text st text) in (verdict res, times t) end);
+
+(*the profile is a tracing message on the command, so ask it alone*)
+val _ =
+  register "linter_profile" (fn limit => fn [text] => fn st =>
+    let val (res, t) = timed limit (fn () => ML_Profiling.profile "time_thread" (run_by st text) ())
+    in (verdict res, times t) end);
 
 val _ =
   register "linter_goal" (fn _ => fn [] => fn st => ("goal", goal_features (Toplevel.proof_of st)));

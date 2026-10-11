@@ -6,9 +6,10 @@ import isabelle._
 
 
 object Pide {
-  /* a print function of ml/linter_query.ML, run on the result state of `at` */
+  /* a print function of ml/linter_query.ML, run on the result state of `at`; serial: asked alone,
+    so that its times are not distorted by other questions */
   sealed case class Question(key: String, theory: Document.Node.Name, at: Command, function: String,
-      args: List[String], timeout: Time)
+      args: List[String], timeout: Time, serial: Boolean = false)
 
   /* all properties of the result message */
   sealed case class Answer(verdict: String, props: Properties.T = Nil) {
@@ -82,8 +83,11 @@ object Pide {
     var answers: Answers = Map.empty
     var round = next(answers).filterNot(q => answers.contains(q.key))
     while (round.nonEmpty) {
-      progress.echo(name + ": asking " + round.length + " questions")
-      answers ++= ask(session, round, progress)
+      val (serial, parallel) = round.partition(_.serial)
+      progress.echo(name + ": asking " + round.length + " questions" +
+        (if (serial.isEmpty) "" else ", " + serial.length + " one at a time"))
+      if (parallel.nonEmpty) answers ++= ask(session, parallel, progress)
+      for (q <- serial) answers ++= ask(session, List(q), progress)
       round = next(answers).filterNot(q => answers.contains(q.key))
     }
     answers

@@ -90,7 +90,7 @@ object Faster_Step extends Lint {
 
 
   /* Per step: time it, try the candidates with the original time over the speed-up as their limit,
-    then re-time the fastest against the original a few times (the first times are noisy). */
+    then re-time the fastest against the original a few times, alone (the first times are noisy). */
 
   def check(lemma: Lemma, step: Step, answers: Pide.Answers, options: Options): Result = {
     val speedup = options.real("faster_step_speedup")
@@ -121,7 +121,7 @@ object Faster_Step extends Lint {
     val runs = options.int("faster_step_runs").toString
     val timing =
       Pide.Question(key(lemma, step, "time:" + method), lemma.theory, step.goal.command, "linter_time",
-        List(runs, step.methods, method), Time.ms(original.ms * 2 max 1000L))
+        List(runs, step.methods, method), Time.ms(original.ms * 2 max 1000L), serial = true)
 
     answers.get(timing.key) match {
       case None => Left(List(timing))

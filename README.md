@@ -66,6 +66,9 @@ isabelle linter_census -d AFP -D AFP/Huffman -O timings.tsv
 taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.tsv
 ```
 
+`-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
+functions, which shows where a slow step spends its time.
+
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,

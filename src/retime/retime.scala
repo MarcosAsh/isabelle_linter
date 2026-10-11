@@ -41,36 +41,80 @@ object Retime {
 
 
   /* each step alone, so the runs do not compete */
+
+  def time_step(checked: Pide.Checked, lemma: Lemma, step: Step, runs: Int, timeout: Time,
+      progress: Progress): (String, Option[Long], Option[Long], Option[Long]) = {
+    val key = lemma.key + ":" + step.cmd.offset + ":retime"
+    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_times",
+      List(runs.toString, step.methods), timeout)
+    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    answer.long("ms0") match {
+      case Some(ms) => ("closes", Some(ms), answer.long("cpu0"), answer.long("gc0"))
+      case None => (if (answer.closes) "fails" else answer.verdict, None, None, None)
+    }
+  }
+
+  /* the profile is a tracing message on the step's command; asked alone, it can only be this one's */
+  val profile_top = 40
+
+  def profile_step(checked: Pide.Checked, lemma: Lemma, step: Step, timeout: Time,
+      progress: Progress): Option[ML_Profiling.Report] = {
+    val key = lemma.key + ":" + step.cmd.offset + ":profile"
+    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_profile", List(step.methods), timeout)
+    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    if (!answer.closes) None
+    else {
+      val state = checked.session.get_state()
+      state.command_results(state.snapshot(lemma.theory).version, step.goal.command).iterator
+        .collect({ case (_, Protocol.ML_Profiling(report)) => report.clean_name }).toList.lastOption
+    }
+  }
+
+  def profile_lines(row: Row, report: ML_Profiling.Report): List[String] = {
+    val total = report.total.count
+    for ((e, i) <- report.entries.sortBy(-_.count).take(profile_top).zipWithIndex)
+    yield List(row.session, row.file, row.offset.toString, i.toString, e.count.toString, total.toString,
+      e.name.replace('\t', ' ')).mkString("\t")
+  }
+
+  /* lines for the timings and, if profile, for the profiles */
   def retime_session(options: Options, session_name: String, rows: List[Row], dirs: List[Path],
-      progress: Progress): List[String] =
+      profile: Boolean, progress: Progress): (List[String], List[String]) =
     Pide.check(options, session_name, dirs, progress, imported = true) { checked =>
       val runs = options.int("retime_runs")
-      for ((row, found) <- find_steps(checked, rows)) yield {
-        val (verdict, median) =
-          found match {
-            case None => ("not_found", None)
-            case Some((lemma, step)) =>
-              val timeout = Time.seconds((row.seconds * options.real("retime_factor")) max 10.0)
-              val key = lemma.key + ":" + step.cmd.offset + ":retime"
-              val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_times",
-                List(runs.toString, step.methods), timeout)
-              val answer = Pide.ask(checked.session, List(q), progress)(key)
-              answer.long("ms0") match {
-                case Some(ms) => ("closes", Some(ms))
-                case None => (if (answer.closes) "fails" else answer.verdict, None)
-              }
-          }
-        progress.echo(String.format("retime: %8.2f s -> %s %s", row.seconds,
-          median.map(ms => String.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
-        List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
-          median.map(_.toString).getOrElse(""), runs.toString, row.text).mkString("\t")
-      }
+      val results =
+        for ((row, found) <- find_steps(checked, rows)) yield {
+          val timeout = Time.seconds((row.seconds * options.real("retime_factor")) max 10.0)
+          val (verdict, median, cpu, gc) =
+            found match {
+              case None => ("not_found", None, None, None)
+              case Some((lemma, step)) => time_step(checked, lemma, step, runs, timeout, progress)
+            }
+          val profiled =
+            for {
+              (lemma, step) <- found if profile && verdict == "closes"
+              report <- profile_step(checked, lemma, step, timeout, progress)
+            } yield profile_lines(row, report)
+
+          progress.echo(String.format("retime: %8.2f s -> %s %s", row.seconds,
+            median.map(ms => String.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
+          val line =
+            List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
+              List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,
+              row.text).mkString("\t")
+          (line, profiled.getOrElse(Nil))
+        }
+      (results.map(_._1), results.flatMap(_._2))
     }
 
   /* sessions already in output are skipped, so a long run can resume */
-  def retime(options: Options, rows: List[Row], output: Path, dirs: List[Path], progress: Progress): Unit = {
+  def retime(options: Options, rows: List[Row], output: Path, profiles: Option[Path], dirs: List[Path],
+      progress: Progress): Unit = {
     if (!output.is_file) {
-      File.write(output, "session\tfile\toffset\tcensus_s\tverdict\tmedian_ms\truns\ttext\n")
+      File.write(output, "session\tfile\toffset\tcensus_s\tverdict\tmedian_ms\tcpu_ms\tgc_ms\truns\ttext\n")
+    }
+    for (path <- profiles if !path.is_file) {
+      File.write(path, "session\tfile\toffset\trank\tcount\ttotal\tfunction\n")
     }
     val done = split_lines(File.read(output)).drop(1).filter(_.nonEmpty).map(_.takeWhile(_ != '\t')).toSet
     val sessions = rows.groupBy(_.session).toList.sortBy(-_._2.map(_.seconds).sum)
@@ -78,7 +122,8 @@ object Retime {
       if (done(session_name)) progress.echo("Skipping " + session_name + ": already timed")
       else {
         progress.echo(session_name + ": " + rs.length + " steps")
-        val lines = retime_session(options, session_name, rs, dirs, progress)
+        val (lines, profile) = retime_session(options, session_name, rs, dirs, profiles.isDefined, progress)
+        for (path <- profiles if profile.nonEmpty) File.append(path, profile.mkString("", "\n", "\n"))
         File.append(output, lines.mkString("", "\n", "\n"))
       }
     }
@@ -93,6 +138,7 @@ object Retime {
         var input = Path.explode("timings.tsv")
         var n = 200
         var output = Path.explode("retime.tsv")
+        var profiles: Option[Path] = None
         var options = Options.init()
 
         val getopts = Getopts("""
@@ -101,23 +147,26 @@ Usage: isabelle linter_retime [OPTIONS]
   Options are:
     -I FILE      census timings (default: timings.tsv, from linter_census -O)
     -O FILE      output file (default: retime.tsv)
+    -P FILE      also profile each step once and write its busiest ML functions to FILE
     -d DIR       include session directory
     -n N         the N slowest `by` steps (default: 200)
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
 
   Check each session that holds one of the N slowest `by` steps, then run
   each of those steps retime_runs times, one step at a time, and write the
-  median. The build's timings come from a loaded machine; these are the ones
+  medians of wall-clock, cpu and gc time (cpu and gc are for the whole
+  process, which is fair as only one step runs). The build's timings come from a loaded machine; these are the ones
   to report. Sessions already in FILE are skipped, so a run can resume.
 """,
           "I:" -> (arg => input = Path.explode(arg)),
           "O:" -> (arg => output = Path.explode(arg)),
+          "P:" -> (arg => profiles = Some(Path.explode(arg))),
           "d:" -> (arg => dirs += Path.explode(arg)),
           "n:" -> (arg => n = Value.Int.parse(arg)),
           "o:" -> (arg => options = options + arg))
 
         if (getopts(args).nonEmpty) getopts.usage()
 
-        retime(options, slowest(read_rows(input), n), output, dirs.toList, new Console_Progress())
+        retime(options, slowest(read_rows(input), n), output, profiles, dirs.toList, new Console_Progress())
       })
 }
