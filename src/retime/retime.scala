@@ -72,9 +72,11 @@ object Retime {
 
   def profile_lines(row: Row, report: ML_Profiling.Report): List[String] = {
     val total = report.total.count
-    for ((e, i) <- report.entries.sortBy(-_.count).take(profile_top).zipWithIndex)
-    yield List(row.session, row.file, row.offset.toString, i.toString, e.count.toString, total.toString,
-      e.name.replace('\t', ' ')).mkString("\t")
+    /* clean names drop the id of each instance, so the same function can come more than once */
+    val counts = report.entries.groupMapReduce(_.name)(_.count)(_ + _).toList.sortBy(-_._2)
+    for (((name, count), i) <- counts.take(profile_top).zipWithIndex)
+    yield List(row.session, row.file, row.offset.toString, i.toString, count.toString, total.toString,
+      name.replace('\t', ' ')).mkString("\t")
   }
 
   /* lines for the timings and, if profile, for the profiles */
