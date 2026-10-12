@@ -3,8 +3,9 @@
 
 Usage: sudo python3 scripts/timing_box.py [--undo]
 
-Stops the k3s agent and kills its pods (stopping the agent alone leaves them running), sets every core's governor to performance and turns boost off, so a
-step's time does not depend on heat or on what else runs. --undo puts it all back.
+Stops the k3s agent and kills its pods (stopping the agent alone leaves them running), sets
+every core's governor to performance and turns boost off, so a step's time does not depend on
+heat or on what else runs. --undo puts it all back.
 """
 
 import subprocess
@@ -19,14 +20,17 @@ KILLALL = "/usr/local/bin/k3s-killall.sh"
 
 def write_all(name, value):
     for f in sorted(CPUS.glob(f"cpu[0-9]*/cpufreq/{name}")):
-        f.write_text(value)
+        try:
+            f.write_text(value)
+        except OSError:
+            # amd-pstate-epp refuses a preference while the performance governor is set
+            pass
 
 
 def setup():
     subprocess.run(["systemctl", "stop", SERVICE], check=False)
     subprocess.run([KILLALL], check=False, stdout=subprocess.DEVNULL)
     write_all("scaling_governor", "performance")
-    # amd-pstate-epp reads its preference separately from the governor
     write_all("energy_performance_preference", "performance")
     BOOST.write_text("0")
 
