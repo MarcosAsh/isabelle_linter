@@ -11,21 +11,43 @@ object Unused extends Lint {
   /* questions still to ask, or the unneeded pieces */
   type Result = Either[List[Pide.Question], List[Piece]]
 
+  /* the unneeded pieces, with the lemma's median times before and after the fix */
+  type Timed = Either[List[Pide.Question], (List[Piece], Option[(Long, Long)])]
+
 
   /* Per lemma: check it as written (its time sets the budget), delete each piece alone, then all
     unneeded pieces together, else one at a time. Then retry the `have`s that the deletions may
-    have freed. Assumptions come last and are reported but never part of the fix. */
+    have freed. Assumptions come last and are reported but never part of the fix. Last, time the
+    lemma with and without the fix, alone, as a deletion can make a proof slower. */
 
-  def check(lemma: Lemma, answers: Pide.Answers, options: Options): Result = {
+  def check(lemma: Lemma, answers: Pide.Answers, options: Options): Timed = {
     val timeout = Time.seconds(options.real("linter_timeout"))
     val original = rerun(lemma, "original", Nil, timeout)
 
     answers.get(original.key) match {
       case None => Left(List(original))
-      case Some(a) if !a.closes => Right(Nil)
+      case Some(a) if !a.closes => Right((Nil, None))
       case Some(a) =>
         val budget = Time.ms((a.ms * options.real("linter_factor")).toLong max 1000L min timeout.ms)
-        new Search(lemma, answers, budget).run()
+        new Search(lemma, answers, budget).run() match {
+          case Left(questions) => Left(questions)
+          case Right(pieces) => timed(lemma, pieces, budget, answers, options)
+        }
+    }
+  }
+
+  private def timed(lemma: Lemma, pieces: List[Piece], budget: Time, answers: Pide.Answers,
+      options: Options): Timed = {
+    val fixed = pieces.filterNot(_.kind == "assumption")
+    if (fixed.isEmpty) Right((pieces, None))
+    else {
+      val q = Pide.Question(lemma.key + ":time", lemma.theory, lemma.before.command, "linter_runs",
+        List(options.int("unused_runs").toString, lemma.without(Nil), lemma.without(fixed.map(_.range))),
+        budget, serial = true)
+      answers.get(q.key) match {
+        case None => Left(List(q))
+        case Some(t) => Right((pieces, if (t.closes) Some((t.ms, t.ms2)) else None))
+      }
     }
   }
 
@@ -90,15 +112,17 @@ object Unused extends Lint {
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     for {
       lemma <- lemmas
-      pieces <- check(lemma, answers, options).toOption.toList
+      (pieces, times) <- check(lemma, answers, options).toOption.toList
       if pieces.nonEmpty
-    } yield finding(lemma, pieces)
+    } yield finding(lemma, pieces, times)
 
-  private def finding(lemma: Lemma, pieces: List[Piece]): Finding = {
+  private def finding(lemma: Lemma, pieces: List[Piece], times: Option[(Long, Long)]): Finding = {
     val (assumptions, others) = pieces.partition(_.kind == "assumption")
 
+    val timing = times.toList.map({ case (before, after) =>
+      "time: " + before + " ms as written, " + after + " ms with the fix (medians, alone)" })
     val lines =
-      section("not needed:", others) :::
+      section("not needed:", others) ::: timing :::
       section("not needed, but removing them changes the statement:", assumptions)
     val fix = if (others.isEmpty) None else Some(lemma.without(others.map(_.range)))
 

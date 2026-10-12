@@ -6,6 +6,9 @@ public option linter_timeout : real = 30
 public option linter_factor : real = 5
   -- "unused: an edited lemma gets this many times the original lemma's time (at least 1s)"
 
+public option unused_runs : int = 3
+  -- "unused: the lemma with and without the fix is timed this many times; medians are compared"
+
 public option faster_step_slow : real = 1.0
   -- "faster_step: only `by` steps that take at least this many seconds are tried"
 

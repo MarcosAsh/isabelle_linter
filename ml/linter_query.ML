@@ -6,6 +6,8 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians, as are
                         cpu, cpu2 and gc, gc2
   linter_run  TEXT      run an edited copy of the lemma from the state before it
+  linter_runs N A B     run lemma texts A and B N times each, in turn; ms, ms2 are the medians,
+                        as are cpu, cpu2
   linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
                         cpu0, gc0 ... the medians of their cpu and gc, runs0 ... every run's ms
   linter_goal           describe the goal, for learning which methods close it
@@ -192,6 +194,20 @@ val _ =
         [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
          med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2),
          med "gc" (#gc o #2 o #1), med "gc2" (#gc o #2 o #2)])
+    end);
+
+val _ =
+  register "linter_runs" (fn limit => fn [n, a, b] => fn st =>
+    let
+      fun run text = timed limit (run_text st text) |> apfst verdict;
+      val runs = map (fn _ => (run a, run b)) (1 upto the (Int.fromString n));
+      val ok = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
+
+      fun med name f = ms name (median (map (Time.toMilliseconds o f) runs));
+    in
+      (if ok then "closes" else "fails",
+        [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
+         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2)])
     end);
 
 (*the methods run one after another, never in parallel*)
