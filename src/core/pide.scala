@@ -40,8 +40,10 @@ object Pide {
     if (!Build.build_logic(options, logic, build_heap = true, progress = progress, dirs = dirs, strict = true).ok)
       error("Failed to build " + quote(logic))
 
+    /* no forked proofs: a question must see every proof it starts fail or finish, and an
+      unnamed or non-theorem result is not joined by Thm.consolidate_theory */
     val resources =
-      Headless.Resources.make(options, logic, session_dirs = dirs,
+      Headless.Resources.make(options + "parallel_proofs=0", logic, session_dirs = dirs,
         include_sessions = deps.sessions_structure.imports_topological_order, progress = progress)
     val session = resources.start_session(progress = progress)
     try {

@@ -36,6 +36,15 @@ lemma u5: "rev (rev (xs @ ys)) = xs @ ys"
 lemma u6: "(x::nat) * 2 = x + x"
   by simp
 
+(* nothing: the unnamed corollary needs secret_val, as simp does not unfold secret *)
+definition secret :: nat where "secret = 3"
+
+lemma secret_val: "secret = 3"
+  by (simp add: secret_def)
+
+corollary "secret + 1 = 4"
+  using secret_val by simp
+
 (* the assumption is needed *)
 lemma u7:
   assumes "A"
