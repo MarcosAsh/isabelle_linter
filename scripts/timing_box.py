@@ -29,7 +29,8 @@ def write_all(name, value):
 
 def setup():
     subprocess.run(["systemctl", "stop", SERVICE], check=False)
-    subprocess.run([KILLALL], check=False, stdout=subprocess.DEVNULL)
+    if Path(KILLALL).exists():
+        subprocess.run([KILLALL], check=False, stdout=subprocess.DEVNULL)
     write_all("scaling_governor", "performance")
     write_all("energy_performance_preference", "performance")
     BOOST.write_text("0")
