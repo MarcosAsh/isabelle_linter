@@ -3,3 +3,4 @@ session Linter_Example = HOL +
   theories
     Example
     Unused
+    Interp

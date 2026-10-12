@@ -180,13 +180,18 @@ object Lemma {
 
     for {
       (cmd, i) <- cmds.zipWithIndex
-      if Keyword.theory_goal(cmd.kind) && i > 0
+      if theorem_commands(cmd.name) && i > 0
       end <- goal_end(cmds, i)
     } yield {
       val lemma = cmds.slice(i, end + 1)
       Lemma(snapshot.node_name, text, lines, cmds(i - 1), lemma, lemma.forall(checked))
     }
   }
+
+  /* goals whose result is stored as a theorem, so that Thm.consolidate_theory waits for their
+    forked proofs; an interpretation's or instance's proofs are not, and may fail unseen */
+  val theorem_commands: Set[String] =
+    Set("lemma", "theorem", "corollary", "proposition", "schematic_goal")
 
   /* the command that closes the goal opened by cmds(i) */
   def goal_end(cmds: List[Cmd], i: Int): Option[Int] = {
