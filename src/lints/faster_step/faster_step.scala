@@ -89,6 +89,22 @@ object Faster_Step extends Lint {
     else method
 
 
+  /* `simp only:` with the rules the step's own proof used, after any `induction` or `cases` */
+
+  val simp_methods: Set[String] = Set("simp", "simp_all", "auto", "fastforce", "force", "clarsimp")
+
+  def uses_simp(step: Step): Boolean = step.cmd.body.exists(t => simp_methods(t.source))
+
+  def simp_only(step: Step, answer: Pide.Answer): Option[String] =
+    answer.get("rules").filter(rules => answer.closes && rules.nonEmpty).map { rules =>
+      step.split match {
+        case Some((first, _)) => first + " (simp_all only: " + rules + ")"
+        case None if answer.long("subgoals").exists(_ > 1) => "(simp_all only: " + rules + ")"
+        case None => "(simp only: " + rules + ")"
+      }
+    }
+
+
   /* Per step: time it, try the candidates with the original time over the speed-up as their limit,
     then re-time the fastest against the original a few times, alone (the first times are noisy). */
 
@@ -102,8 +118,10 @@ object Faster_Step extends Lint {
       case Some(a) =>
         val limit = Time.ms((a.ms / speedup).toLong max 1L)
         val split = step.split.map({ case (first, _) => first -> subgoals(lemma, step, first, limit) })
-        val tries = edits(step, split, answers).map(m => m -> try_by(lemma, step, m, limit))
-        val missing = (split.map(_._2).toList ::: tries.map(_._2)).filterNot(q => answers.contains(q.key))
+        val rules = if (uses_simp(step)) Some(used_rules(lemma, step, options)) else None
+        val tries = edits(step, split, rules, answers).map(m => m -> try_by(lemma, step, m, limit))
+        val missing =
+          (split.map(_._2).toList ::: rules.toList ::: tries.map(_._2)).filterNot(q => answers.contains(q.key))
 
         if (missing.nonEmpty) Left(missing)
         else {
@@ -131,20 +149,26 @@ object Faster_Step extends Lint {
     }
   }
 
-  /* the per-subgoal edit joins the others once its question is answered */
-  private def edits(step: Step, split: Option[(String, Pide.Question)], answers: Pide.Answers): List[String] = {
+  /* the per-subgoal and `simp only:` edits join the others once their questions are answered */
+  private def edits(step: Step, split: Option[(String, Pide.Question)], rules: Option[Pide.Question],
+      answers: Pide.Answers): List[String] = {
     val subgoal_edit =
       for {
         (first, q) <- split
         answer <- answers.get(q.key)
         method <- per_subgoal(step, first, answer)
       } yield method
-    (candidates(step) ::: subgoal_edit.toList).filterNot(_ == step.methods).distinct
+    val simp_edit = rules.flatMap(q => answers.get(q.key)).flatMap(simp_only(step, _))
+    (candidates(step) ::: subgoal_edit.toList ::: simp_edit.toList).filterNot(_ == step.methods).distinct
   }
 
   private def subgoals(lemma: Lemma, step: Step, first: String, limit: Time): Pide.Question =
     Pide.Question(key(lemma, step, "subgoals"), lemma.theory, step.goal.command, "linter_subgoals",
       first :: subgoal_closers(step), limit)
+
+  private def used_rules(lemma: Lemma, step: Step, options: Options): Pide.Question =
+    Pide.Question(key(lemma, step, "rules"), lemma.theory, step.goal.command, "linter_used_rules",
+      List(step.methods), Time.seconds(options.real("linter_timeout")))
 
   private def key(lemma: Lemma, step: Step, what: String): String =
     lemma.key + ":" + step.cmd.offset + ":" + what
