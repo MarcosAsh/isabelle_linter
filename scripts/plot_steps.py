@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Histogram of proof step times from the census, and of the re-timed slow steps; and each
-re-timed step's census time against its time alone (OUT with -overstatement before .png).
+"""Step-time histograms from the census and the re-timed steps, and census against re-timed time.
 
-Usage: uv run --with matplotlib scripts/plot_steps.py [CENSUS] [RETIME] [OUT]
-       (defaults: census/sample.tsv census/retime2.tsv census/steps.png)
+Usage: uv run --with matplotlib scripts/plot_steps.py [CENSUS] [RETIME] [OUT.png]
 """
 
 import csv

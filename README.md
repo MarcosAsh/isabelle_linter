@@ -69,6 +69,22 @@ taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.ts
 `-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
 functions, which shows where a slow step spends its time.
 
+The census sample is the 150 entries in `scripts/entries.txt`:
+
+```bash
+isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_slow -X large \
+  -j 3 -o threads=6 -o build_timing_threshold=0.01
+```
+
+## Scripts
+
+- `lint_afp.py LINT -n 20`: run a lint with `-F` on copies of AFP entries and rebuild them;
+  `-s census/LINT` summarises.
+- `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
+- `plot_steps.py`: the step-time figures.
+- `timing_box.py`: quiet the timing machine (root; `--undo`).
+- `peephole.py`: lookup table of winning rewrites from `linter_collect` output.
+
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,
