@@ -77,7 +77,21 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
     val (first, rest) =
       if (body.head.is("(")) Syntax.take_group(body, "(", ")") else (List(body.head), body.tail)
     def source(toks: List[Tok]) = text.substring(toks.head.range.start, toks.last.range.stop)
-    if (rest.isEmpty) None else Some((source(first), source(rest)))
+    if (rest.nonEmpty) Some((source(first), source(rest)))
+    else if (first.head.is("(")) split_semicolon(first.tail.init).map {
+      case (m1, m2) => ("(" + source(m1) + ")", "(" + source(m2) + ")")
+    }
+    else None
+  }
+
+  /* `M1; M2 ...` at the top level of a group, which runs like `M1 M2` when M2 works on every goal */
+  private def split_semicolon(toks: List[Tok]): Option[(List[Tok], List[Tok])] = {
+    var depth = 0
+    val n = toks.indexWhere { t =>
+      if (t.is("(")) depth += 1 else if (t.is(")")) depth -= 1
+      depth == 0 && t.is(";")
+    }
+    if (n <= 0 || n == toks.length - 1) None else Some((toks.take(n), toks.drop(n + 1)))
   }
 
 
