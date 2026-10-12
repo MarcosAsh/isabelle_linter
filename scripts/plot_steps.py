@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Histogram of proof step times from the census, and of the re-timed slow steps.
+"""Histogram of proof step times from the census, and of the re-timed slow steps; and each
+re-timed step's census time against its time alone (OUT with -overstatement before .png).
 
 Usage: uv run --with matplotlib scripts/plot_steps.py [CENSUS] [RETIME] [OUT]
        (defaults: census/sample.tsv census/retime2.tsv census/steps.png)
@@ -53,6 +54,33 @@ def bars(ax, values, bins, weights=None):
     ax.hist(values, bins=bins, weights=weights, color=BLUE, edgecolor="white", linewidth=1)
 
 
+def pairs(path):
+    with open(path) as f:
+        rows = [r for r in csv.DictReader(f, delimiter="\t") if r["verdict"] == "closes"]
+    return (np.array([float(r["census_s"]) for r in rows]),
+            np.array([float(r["median_ms"]) / 1000 for r in rows]))
+
+
+def overstatement(retime, out):
+    census, alone = pairs(retime)
+    fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+    ax.scatter(census, alone, s=14, color=BLUE, alpha=0.7, linewidths=0)
+    lo, hi = 0.005, 400
+    ax.plot([lo, hi], [lo, hi], color=MUTED, linewidth=1)
+    ax.axhline(SLOW, color=MUTED, linestyle="--", linewidth=1)
+    ax.set_xlim(10, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_yscale("log")
+    ax.set_xlabel("census time, parallel build (s, log)", color=MUTED)
+    ax.set_ylabel("time alone, median of 3 (s, log)", color=MUTED)
+    ratio = np.median(census / alone)
+    style(ax, f"Build logs overstate slow steps {ratio:.1f}x at the median")
+    ax.text(0.98, 0.04, "solid: same time  dashed: 5 s", transform=ax.transAxes, ha="right",
+            color=MUTED, fontsize=9)
+    fig.savefig(out, dpi=150, facecolor="white")
+    print(out)
+
+
 def main():
     defaults = ["census/sample.tsv", "census/retime2.tsv", "census/steps.png"]
     census, retime, out = sys.argv[1:4] + defaults[len(sys.argv[1:4]):]
@@ -82,6 +110,7 @@ def main():
 
     fig.savefig(out, dpi=150, facecolor="white")
     print(out)
+    overstatement(retime, out.replace(".png", "-overstatement.png"))
 
 
 if __name__ == "__main__":
