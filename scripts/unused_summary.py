@@ -33,8 +33,11 @@ def session(log):
 
 
 def built(log):
+    """True or False once the build has finished, None while it runs."""
     text = log.read_text()
-    return "Unfinished session" not in text and "FAILED" not in text
+    if "Unfinished session" in text or "FAILED" in text:
+        return False
+    return True if "Finished at" in text else None
 
 
 def main():
@@ -56,9 +59,11 @@ def main():
         faster = sum(b < a / 1.2 and a - b >= 10 for a, b in times)
         print(f"fixed lemmas timed: {len(times)}; {before} ms -> {after} ms in total; "
               f"{faster} faster, {slower} slower (> 1.2x and >= 10 ms)")
-    ok = sum(builds.values())
-    print(f"entries rebuilt with all fixes: {ok} of {len(builds)}"
-          + ("" if ok == len(builds) else "; failed: " + ", ".join(e for e, b in builds.items() if not b)))
+    done = {e: b for e, b in builds.items() if b is not None}
+    failed = [e for e, b in done.items() if not b]
+    print(f"entries rebuilt with all fixes: {len(done) - len(failed)} of {len(done)} built"
+          + (f" ({len(builds) - len(done)} building)" if len(done) < len(builds) else "")
+          + ("; failed: " + ", ".join(failed) if failed else ""))
 
 
 if __name__ == "__main__":
