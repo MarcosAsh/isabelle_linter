@@ -15,6 +15,9 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         profile arrives as a tracing message on the command
   linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
                         the fastest C (as an index) and its time, for the subgoals some C closes
+  linter_used_rules M   run `by M`; rules are the simp rules, and the facts named in M, that its
+                        proof used, as names that parse in the goal's context; subgoals counts
+                        the goals before it
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone.
@@ -97,6 +100,43 @@ fun fastest limit closers state =
       if verdict res = "closes" andalso (case best of SOME (_, b) => #elapsed t < b | NONE => true)
       then SOME (i, #elapsed t) else best
     end) (map_index I closers) NONE;
+
+
+(* used rules *)
+
+(*like `by M1 M2`, but keeping the finished goal*)
+fun finish_by (m1, m2) state =
+  Proof.proof (SOME m1) state |> Seq.the_result ""
+  |> (case m2 of SOME m => Proof.apply_end m #> Seq.the_result "" | NONE => I)
+  |> Proof.apply_end (Method.finish_text (NONE, true), Position.no_range) |> Seq.the_result ""
+  |> Proof.goal |> #goal;
+
+(*the shortest name that still means this fact here*)
+fun extern_fact ctxt name =
+  let
+    val space = Facts.space_of (Proof_Context.facts_of_fact ctxt name);
+    val xname = Name_Space.extern ctxt space name;
+  in if Name_Space.intern space xname = name then SOME xname else NONE end;
+
+(*named theorems the proof depends on, stopping at each; forked proofs are joined first*)
+fun used_rules st text () =
+  let
+    val state = Toplevel.proof_of st;
+    val ctxt = Proof.context_of state;
+    val thy = Proof_Context.theory_of ctxt;
+    val goal = finish_by (parse_methods thy text) state;
+    val _ = Thm.no_prems goal orelse error "Unfinished proof";
+
+    val deps = Thm_Deps.thm_deps thy [Thm.close_derivation Position.none goal];
+    val simps = map (#1 o #1) (Raw_Simplifier.dest_simps (simpset_of ctxt));
+    val words = Token.explode (Thy_Header.get_keywords thy) Position.none text |> map Token.content_of;
+    fun rule (name, i) =
+      (case extern_fact ctxt name of
+        SOME xname =>
+          if member (op =) simps name orelse exists (member (op =) words) [name, xname]
+          then SOME (xname ^ Thm_Name.print_suffix (name, i)) else NONE
+      | NONE => NONE);
+  in map_filter (rule o #2) deps end;
 
 
 (* goal features *)
@@ -251,5 +291,11 @@ val _ =
           SOME (j, t) => [("sub" ^ string_of_int i, string_of_int j), ms ("ms" ^ string_of_int i) (Time.toMilliseconds t)]
         | NONE => []);
     in ("closes", ms "n" n :: maps subgoal (1 upto n)) end);
+
+val _ =
+  register "linter_used_rules" (fn limit => fn [text] => fn st =>
+    ("closes",
+      [("rules", space_implode " " (Timeout.apply limit (used_rules st text) ())),
+       ms "subgoals" (nsubgoals (Toplevel.proof_of st))]));
 
 end;
