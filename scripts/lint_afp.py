@@ -2,7 +2,7 @@
 """Run a lint with -F on copies of AFP entries, then rebuild the copies to check the fixes.
 
 Usage: scripts/lint_afp.py LINT ENTRY...  |  scripts/lint_afp.py LINT -n N  |  scripts/lint_afp.py -s DIR
-Copies go to census/LINT, logs to census/LINT/logs; entries already built are skipped.
+Copies go to census/LINT, logs to census/LINT/logs; built entries and finished sessions are skipped.
 """
 
 import os
@@ -46,11 +46,22 @@ def copy(entry, out):
     return [n + SUFFIX for n in names]
 
 
+# its fixes are in the copy: the run ended and applied any it found
+def finished(log):
+    text = log.read_text() if log.exists() else ""
+    found = re.search(r"^(\d+) findings$", text, re.M)
+    return bool(found) and (found.group(1) == "0" or "Fixed " in text)
+
+
+# a copy with finished sessions is resumed, not copied again
 def lint(name, entry, out):
     logs = out / "logs"
-    sessions = copy(entry, out)
+    sessions = [n + SUFFIX for n in SESSION.findall((AFP / entry / "ROOT").read_text())]
+    if not any(finished(logs / f"{s}.log") for s in sessions):
+        copy(entry, out)
     for s in sessions:
-        run(["isabelle", "linter", "-l", name, "-F", "-d", AFP, "-d", out, s], logs / f"{s}.log")
+        if not finished(logs / f"{s}.log"):
+            run(["isabelle", "linter", "-l", name, "-F", "-d", AFP, "-d", out, s], logs / f"{s}.log")
     rc = run(["isabelle", "build", "-d", AFP, "-d", out, "-o", "document=false", *sessions],
              logs / f"{entry}.build")
     print(entry, "ok" if rc == 0 else "FAILED", flush=True)
