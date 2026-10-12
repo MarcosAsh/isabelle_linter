@@ -4,3 +4,4 @@ session Linter_Example = HOL +
     Example
     Unused
     Interp
+    Simp_Only
