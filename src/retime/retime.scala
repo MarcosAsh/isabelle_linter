@@ -43,14 +43,14 @@ object Retime {
   /* each step alone, so the runs do not compete */
 
   def time_step(checked: Pide.Checked, lemma: Lemma, step: Step, runs: Int, timeout: Time,
-      progress: Progress): (String, Option[Long], Option[Long], Option[Long]) = {
+      progress: Progress): (String, Option[Long], Option[Long], Option[Long], String) = {
     val key = lemma.key + ":" + step.cmd.offset + ":retime"
     val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_times",
       List(runs.toString, step.methods), timeout)
     val answer = Pide.ask(checked.session, List(q), progress)(key)
     answer.long("ms0") match {
-      case Some(ms) => ("closes", Some(ms), answer.long("cpu0"), answer.long("gc0"))
-      case None => (if (answer.closes) "fails" else answer.verdict, None, None, None)
+      case Some(ms) => ("closes", Some(ms), answer.long("cpu0"), answer.long("gc0"), answer.get("runs0").getOrElse(""))
+      case None => (if (answer.closes) "fails" else answer.verdict, None, None, None, "")
     }
   }
 
@@ -87,9 +87,9 @@ object Retime {
       val results =
         for ((row, found) <- find_steps(checked, rows)) yield {
           val timeout = Time.seconds((row.seconds * options.real("retime_factor")) max 10.0)
-          val (verdict, median, cpu, gc) =
+          val (verdict, median, cpu, gc, each) =
             found match {
-              case None => ("not_found", None, None, None)
+              case None => ("not_found", None, None, None, "")
               case Some((lemma, step)) => time_step(checked, lemma, step, runs, timeout, progress)
             }
           val profiled =
@@ -103,7 +103,7 @@ object Retime {
           val line =
             List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
               List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,
-              row.text).mkString("\t")
+              each, row.text).mkString("\t")
           (line, profiled.getOrElse(Nil))
         }
       (results.map(_._1), results.flatMap(_._2))
@@ -113,7 +113,7 @@ object Retime {
   def retime(options: Options, rows: List[Row], output: Path, profiles: Option[Path], dirs: List[Path],
       progress: Progress): Unit = {
     if (!output.is_file) {
-      File.write(output, "session\tfile\toffset\tcensus_s\tverdict\tmedian_ms\tcpu_ms\tgc_ms\truns\ttext\n")
+      File.write(output, "session\tfile\toffset\tcensus_s\tverdict\tmedian_ms\tcpu_ms\tgc_ms\truns\truns_ms\ttext\n")
     }
     for (path <- profiles if !path.is_file) {
       File.write(path, "session\tfile\toffset\trank\tcount\ttotal\tfunction\n")

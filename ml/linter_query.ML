@@ -7,7 +7,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         cpu, cpu2 and gc, gc2
   linter_run  TEXT      run an edited copy of the lemma from the state before it
   linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
-                        cpu0, gc0 ... the medians of their cpu and gc
+                        cpu0, gc0 ... the medians of their cpu and gc, runs0 ... every run's ms
   linter_goal           describe the goal, for learning which methods close it
   linter_profile M      run `by M` once under Poly/ML's time profiler for this thread; the
                         profile arrives as a tracing message on the command
@@ -203,9 +203,11 @@ val _ =
         let
           val runs = map (fn _ => run text) (1 upto the (Int.fromString n));
           fun med name f = ms (name ^ string_of_int i) (median (map (Time.toMilliseconds o f o #2) runs));
+          val each = ("runs" ^ string_of_int i,
+            space_implode "," (map (string_of_int o Time.toMilliseconds o #elapsed o #2) runs));
         in
           if forall (fn (res, _) => verdict res = "closes") runs
-          then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc] else []
+          then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, each] else []
         end;
     in ("closes", maps medians (map_index I methods)) end);
 
