@@ -75,24 +75,26 @@ object Pide {
       val ok = checked.lemmas.filter(_.ok)
       lints.flatMap { lint =>
         val log = proper_string(options.string("linter_log")).map(Path.explode)
-        val answers = rounds(checked.session, lint.name, progress, log)(a => lint.ask(ok, a, options))
+        val batch = options.int("linter_batch")
+        val answers = rounds(checked.session, lint.name, progress, log, batch)(a => lint.ask(ok, a, options))
         lint.report(ok, answers, options)
       }
     }
 
-  /* ask until next has no new questions */
-  def rounds(session: Headless.Session, name: String, progress: Progress, log: Option[Path] = None)(
-      next: Answers => List[Question]): Answers = {
+  /* ask until next has no new questions; a big round goes in batches, since thousands of questions
+    at once fill the heap */
+  def rounds(session: Headless.Session, name: String, progress: Progress, log: Option[Path] = None,
+      batch: Int = 500)(next: Answers => List[Question]): Answers = {
     var answers: Answers = Map.empty
-    var round = next(answers).filterNot(q => answers.contains(q.key))
+    var round = next(answers).filterNot(q => answers.contains(q.key)).distinctBy(_.key)
     while (round.nonEmpty) {
       val (serial, parallel) = round.partition(_.serial)
       progress.echo(name + ": asking " + round.length + " questions" +
         (if (serial.isEmpty) "" else ", " + serial.length + " one at a time"))
-      if (parallel.nonEmpty) answers ++= ask(session, parallel, progress)
+      for (b <- parallel.grouped(batch max 1)) answers ++= ask(session, b, progress)
       for (q <- serial) answers ++= ask(session, List(q), progress)
       log.foreach(write_log(_, name, round, answers))
-      round = next(answers).filterNot(q => answers.contains(q.key))
+      round = next(answers).filterNot(q => answers.contains(q.key)).distinctBy(_.key)
     }
     answers
   }
@@ -126,8 +128,9 @@ object Pide {
           val o = m.getOrElse(q.theory, Document.Node.Overlays.empty)
           m + (q.theory -> o.insert(q.at, q.function, instance :: q.timeout.ms.toString :: q.args))
       }
-    session.update(Document.Blobs.empty,
-      overlays.toList.map({ case (name, o) => name -> Document.Node.Perspective(true, Text.Perspective.empty, o) }))
+    def perspectives(f: Document.Node.Overlays => Document.Node.Overlays) =
+      overlays.toList.map({ case (name, o) => name -> Document.Node.Perspective(true, Text.Perspective.empty, f(o)) })
+    session.update(Document.Blobs.empty, perspectives(o => o))
 
     /* the prover enforces time limits; this only guards against a dead session */
     val watchdog = Time.seconds(questions.map(_.timeout.seconds).max + 120)
@@ -137,14 +140,18 @@ object Pide {
       progress.expose_interrupt()
       Time.seconds(0.2).sleep()
       val state = session.get_state()
+      val versions = placed.map(_._2.theory).distinct.map(n => n -> state.snapshot(n).version).toMap
       for ((instance, q) <- placed if !answers.contains(q.key)) {
-        state.command_results(state.snapshot(q.theory).version, q.at).iterator.collectFirst {
+        state.command_results(versions(q.theory), q.at).iterator.collectFirst {
           case (_, XML.Elem(Markup(Markup.RESULT, props @ Markup.Instance(i)), _)) if i == instance =>
             Answer(Properties.get(props, "verdict").getOrElse("fails"), props)
         }.foreach { a => answers += (q.key -> a); last = Time.now() }
       }
     }
     if (answers.size < placed.length) progress.echo_warning((placed.length - answers.size).toString + " questions unanswered")
+
+    /* stop whatever is still running, so that it does not hold workers in the next batch */
+    session.update(Document.Blobs.empty, perspectives(_ => Document.Node.Overlays.empty))
     placed.map({ case (_, q) => q.key -> answers.getOrElse(q.key, unanswered) }).toMap
   }
 }
