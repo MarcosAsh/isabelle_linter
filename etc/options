@@ -3,6 +3,9 @@ section "Isabelle_Linter"
 public option linter_timeout : real = 30
   -- "seconds at most for one question to the prover"
 
+public option linter_log : string = ""
+  -- "append every question and its answer to this TSV file (empty: no log)"
+
 public option linter_factor : real = 5
   -- "unused: an edited lemma gets this many times the original lemma's time (at least 1s)"
 
