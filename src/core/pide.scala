@@ -74,13 +74,14 @@ object Pide {
     check(options, session_name, dirs, progress) { checked =>
       val ok = checked.lemmas.filter(_.ok)
       lints.flatMap { lint =>
-        val answers = rounds(checked.session, lint.name, progress)(a => lint.ask(ok, a, options))
+        val log = proper_string(options.string("linter_log")).map(Path.explode)
+        val answers = rounds(checked.session, lint.name, progress, log)(a => lint.ask(ok, a, options))
         lint.report(ok, answers, options)
       }
     }
 
   /* ask until next has no new questions */
-  def rounds(session: Headless.Session, name: String, progress: Progress)(
+  def rounds(session: Headless.Session, name: String, progress: Progress, log: Option[Path] = None)(
       next: Answers => List[Question]): Answers = {
     var answers: Answers = Map.empty
     var round = next(answers).filterNot(q => answers.contains(q.key))
@@ -90,9 +91,22 @@ object Pide {
         (if (serial.isEmpty) "" else ", " + serial.length + " one at a time"))
       if (parallel.nonEmpty) answers ++= ask(session, parallel, progress)
       for (q <- serial) answers ++= ask(session, List(q), progress)
+      log.foreach(write_log(_, name, round, answers))
       round = next(answers).filterNot(q => answers.contains(q.key))
     }
     answers
+  }
+
+  /* one row per question: lint, function, key, args, verdict, then the answer's properties */
+  private def write_log(path: Path, lint: String, questions: List[Question], answers: Answers): Unit = {
+    def clean(s: String): String = s.replace('\t', ' ').replace('\n', ' ')
+    val rows =
+      for (q <- questions) yield {
+        val a = answers(q.key)
+        (List(lint, q.function, q.key, q.args.mkString(" | "), a.verdict) :::
+          a.props.map({ case (k, v) => k + "=" + v })).map(clean).mkString("\t") + "\n"
+      }
+    File.append(path, rows.mkString)
   }
 
   /* the print functions of ml/; Sledgehammer needs HOL */
