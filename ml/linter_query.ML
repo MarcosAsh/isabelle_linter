@@ -26,10 +26,12 @@ when a question runs alone.
 structure Linter_Query =
 struct
 
+(*physical: a plain timeout is postponed by GC time, so under heap pressure it can run for far
+  longer than its limit*)
 fun timed limit f =
   let
     val start = Timing.start ();
-    val res = Exn.result (Timeout.apply limit f) ();
+    val res = Exn.result (Timeout.apply_physical limit f) ();
   in (res, Timing.result start) end;
 
 (*a timeout must never count as a failure*)
@@ -88,7 +90,7 @@ fun close_first text state () =
     else error "Subgoal not closed"
   end;
 
-(*each later try only gets the best time so far; under 1 ms Timeout.apply has no limit at all*)
+(*each later try only gets the best time so far; under 1 ms a timeout has no limit at all*)
 fun fastest limit closers state =
   fold (fn (i, text) => fn best =>
     let
@@ -204,7 +206,7 @@ fun times ({elapsed, cpu, gc}: Timing.timing) =
 fun register name check =
   Command.print_function name
     (fn {args = instance :: timeout_ms :: args, ...} =>
-      SOME {delay = NONE, pri = Task_Queue.urgent_pri, persistent = false, strict = false,
+      SOME {delay = NONE, pri = 0, persistent = false, strict = false,
         print_fn = fn _ => fn st =>
           let
             val limit = Time.fromMilliseconds (the (Int.fromString timeout_ms));
@@ -295,7 +297,7 @@ val _ =
 val _ =
   register "linter_used_rules" (fn limit => fn [text] => fn st =>
     ("closes",
-      [("rules", space_implode " " (Timeout.apply limit (used_rules st text) ())),
+      [("rules", space_implode " " (Timeout.apply_physical limit (used_rules st text) ())),
        ms "subgoals" (nsubgoals (Toplevel.proof_of st))]));
 
 end;

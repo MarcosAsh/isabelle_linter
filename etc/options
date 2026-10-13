@@ -3,6 +3,9 @@ section "Isabelle_Linter"
 public option linter_timeout : real = 30
   -- "seconds at most for one question to the prover"
 
+public option linter_batch : int = 500
+  -- "questions sent to the prover at once; a bigger round waits for each batch in turn"
+
 public option linter_log : string = ""
   -- "append every question and its answer to this TSV file (empty: no log)"
 
