@@ -35,7 +35,7 @@ def copy(entry, out, afp=AFP, suffix=SUFFIX):
     names = SESSION.findall(root)
     for name in names:
         q = re.escape(name)
-        root = re.sub(r'(session\s+)"?' + q + r'"?', rf'\1"{name}{suffix}"', root)
+        root = re.sub(r'(session\s+)"?' + q + r'"?(?![\w+.-])', rf'\1"{name}{suffix}"', root)
         root = re.sub(r'(=\s*)"?' + q + r'"?(\s*\+)', rf'\1"{name}{suffix}"\2', root)
     (target / "ROOT").write_text(root)
     for thy in target.rglob("*.thy"):
