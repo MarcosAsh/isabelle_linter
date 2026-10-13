@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run a lint with -F on copies of AFP entries, then rebuild the copies to check the fixes.
 
-Usage: scripts/lint_afp.py LINT ENTRY...  |  scripts/lint_afp.py LINT -n N  |  scripts/lint_afp.py -s DIR
-Copies go to census/LINT, logs to census/LINT/logs; built entries and finished sessions are skipped.
+Usage: scripts/lint_afp.py LINT [-o OPTION]... ENTRY...  |  ... LINT [-o OPTION]... -n N  |  ... -s DIR
+Copies go to census/LINT, logs and question logs (SESSION.tsv) to census/LINT/logs; built entries
+and finished sessions are skipped. -o options go to the linter.
 """
 
 import os
@@ -54,14 +55,17 @@ def finished(log):
 
 
 # a copy with finished sessions is resumed, not copied again
-def lint(name, entry, out):
+def lint(name, entry, out, options):
     logs = out / "logs"
     sessions = [n + SUFFIX for n in SESSION.findall((AFP / entry / "ROOT").read_text())]
     if not any(finished(logs / f"{s}.log") for s in sessions):
         copy(entry, out)
     for s in sessions:
         if not finished(logs / f"{s}.log"):
-            run(["isabelle", "linter", "-l", name, "-F", "-d", AFP, "-d", out, s], logs / f"{s}.log")
+            (logs / f"{s}.tsv").unlink(missing_ok=True)
+            question_log = ["-o", f"linter_log={(logs / f'{s}.tsv').resolve()}"]
+            run(["isabelle", "linter", "-l", name, "-F", *options, *question_log, "-d", AFP, "-d", out, s],
+                logs / f"{s}.log")
     rc = run(["isabelle", "build", "-d", AFP, "-d", out, "-o", "document=false", *sessions],
              logs / f"{entry}.build")
     print(entry, "ok" if rc == 0 else "FAILED", flush=True)
@@ -90,11 +94,13 @@ if __name__ == "__main__":
     if args[0] == "-s":
         summary(Path(args[1]))
     else:
-        name, rest = args[0], args[1:]
+        name, rest, options = args[0], args[1:], []
+        while rest[:1] == ["-o"]:
+            options, rest = options + rest[:2], rest[2:]
         entries = rest if rest[:1] != ["-n"] else \
             sorted(random.Random(1).sample(SAMPLE.read_text().split(), int(rest[1])))
         out = Path("census") / name
         (out / "logs").mkdir(parents=True, exist_ok=True)
         for entry in entries:
             if not (out / "logs" / f"{entry}.build").exists():
-                lint(name, entry, out)
+                lint(name, entry, out, options)

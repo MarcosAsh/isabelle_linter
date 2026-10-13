@@ -70,7 +70,8 @@ taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.ts
 `-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
 functions, which shows where a slow step spends its time.
 
-The census sample is the 150 entries in `scripts/entries.txt`:
+`scripts/census_build.py` builds the whole AFP this way (`-j`, `-t` for jobs and threads). The
+census sample is the 150 entries in `scripts/entries.txt`:
 
 ```bash
 isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_slow -X large \
@@ -80,7 +81,9 @@ isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_
 ## Scripts
 
 - `lint_afp.py LINT -n 20`: run a lint with `-F` on copies of AFP entries and rebuild them;
-  `-s census/LINT` summarises.
+  `-o OPTION` goes to the linter, every question goes to `logs/SESSION.tsv`; `-s census/LINT`
+  summarises.
+- `census_build.py`: build the AFP with command timings, for `linter_census`.
 - `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
 - `plot_steps.py`: the step-time figures.
 - `timing_box.py`: quiet the timing machine (root; `--undo`).
