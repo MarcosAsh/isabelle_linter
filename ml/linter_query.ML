@@ -119,12 +119,14 @@ fun extern_fact ctxt name =
     val xname = Name_Space.extern ctxt space name;
   in if Name_Space.intern space xname = name then SOME xname else NONE end;
 
-(*logic, type classes and definitional internals that no proof method needs as a fact*)
+(*logic, type classes, metis and meson's own reconstruction, and definitional internals
+  (monotonicity of inductive definitions, termination) that no proof method needs as a fact*)
 fun plumbing name =
   let val base = Long_Name.base_name name in
-    exists (fn thy => String.isPrefix (thy ^ ".") name) ["Pure", "HOL"] orelse
-    member (op =) ["super", "termination", "cases", "exhaust"] base orelse
-    exists (fn p => String.isPrefix p base) ["arity_", "classrel_"] orelse
+    exists (fn thy => String.isPrefix (thy ^ ".") name) ["Pure", "HOL", "Meson", "Metis", "Inductive"] orelse
+    member (op =) ["super", "termination", "cases", "exhaust", "monoI"] base orelse
+    exists (fn p => String.isPrefix p base) ["arity_", "classrel_", "le_bool", "le_fun"] orelse
+    String.isSuffix "_mono" base orelse
     exists (fn s => String.isSubstring s name) ["accp", "fundef_", "_cong"]
   end;
 
