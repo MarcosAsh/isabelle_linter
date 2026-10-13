@@ -128,7 +128,7 @@ object Pide {
           val o = m.getOrElse(q.theory, Document.Node.Overlays.empty)
           m + (q.theory -> o.insert(q.at, q.function, instance :: q.timeout.ms.toString :: q.args))
       }
-    def perspectives(f: Document.Node.Overlays => Document.Node.Overlays) =
+    def perspectives(f: Document.Node.Overlays => Document.Node.Overlays): List[Document.Edit_Text] =
       overlays.toList.map({ case (name, o) => name -> Document.Node.Perspective(true, Text.Perspective.empty, f(o)) })
     session.update(Document.Blobs.empty, perspectives(o => o))
 
