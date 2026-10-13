@@ -84,6 +84,8 @@ isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_
   `-o OPTION` goes to the linter, every question goes to `logs/SESSION.tsv`; `-s census/LINT`
   summarises.
 - `census_build.py`: build the AFP with command timings, for `linter_census`.
+- `edit_summary.py LOG.tsv...`: hit rate, time saved, search time and winning edit kinds from
+  faster_step question logs.
 - `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
 - `plot_steps.py`: the step-time figures.
 - `timing_box.py`: quiet the timing machine (root; `--undo`).
