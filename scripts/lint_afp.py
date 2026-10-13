@@ -27,24 +27,24 @@ def run(command, log):
 
 
 # the copy's sessions get SUFFIX, and so do session-qualified theory names in its theories
-def copy(entry, out):
+def copy(entry, out, afp=AFP, suffix=SUFFIX):
     target = out / entry
     shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(AFP / entry, target)
+    shutil.copytree(afp / entry, target)
     root = (target / "ROOT").read_text()
     names = SESSION.findall(root)
     for name in names:
         q = re.escape(name)
-        root = re.sub(r'(session\s+)"?' + q + r'"?', rf'\1"{name}{SUFFIX}"', root)
-        root = re.sub(r'(=\s*)"?' + q + r'"?(\s*\+)', rf'\1"{name}{SUFFIX}"\2', root)
+        root = re.sub(r'(session\s+)"?' + q + r'"?', rf'\1"{name}{suffix}"', root)
+        root = re.sub(r'(=\s*)"?' + q + r'"?(\s*\+)', rf'\1"{name}{suffix}"\2', root)
     (target / "ROOT").write_text(root)
     for thy in target.rglob("*.thy"):
         text = thy.read_text()
         for name in names:
-            text = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + SUFFIX + ".", text)
+            text = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + suffix + ".", text)
         thy.write_text(text)
     (out / "ROOTS").write_text("\n".join(sorted(p.parent.name for p in out.glob("*/ROOT"))) + "\n")
-    return [n + SUFFIX for n in names]
+    return [n + suffix for n in names]
 
 
 # its fixes are in the copy: the run ended and applied any it found
