@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Quiet the timing machine: stop k3s and its pods, performance governor, boost off. Needs root.
 
-Usage: sudo python3 scripts/timing_box.py [--undo]
+Usage: sudo python3 scripts/timing_box.py [--boost] [--undo]
+  --boost  keep boost on (faster, possibly noisier)
 """
 
 import subprocess
@@ -20,13 +21,13 @@ def write_all(name, value):
             pass  # amd-pstate-epp refuses a preference under the performance governor
 
 
-def setup():
+def setup(boost):
     subprocess.run(["systemctl", "stop", "k3s-agent"])
     if Path("/usr/local/bin/k3s-killall.sh").exists():
         subprocess.run(["/usr/local/bin/k3s-killall.sh"], stdout=subprocess.DEVNULL)
     write_all("scaling_governor", "performance")
     write_all("energy_performance_preference", "performance")
-    BOOST.write_text("0")
+    BOOST.write_text("1" if boost else "0")
 
 
 def undo():
@@ -37,6 +38,6 @@ def undo():
 
 
 if __name__ == "__main__":
-    undo() if "--undo" in sys.argv else setup()
+    undo() if "--undo" in sys.argv else setup("--boost" in sys.argv)
     print("governor", (CPUS / "cpu0/cpufreq/scaling_governor").read_text().strip(),
           "boost", BOOST.read_text().strip())
