@@ -16,8 +16,9 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
                         the fastest C (as an index) and its time, for the subgoals some C closes
   linter_used_rules M   run `by M`; rules are the simp rules, and the facts named in M, that its
-                        proof used, as names that parse in the goal's context; subgoals counts
-                        the goals before it
+                        proof used, as names that parse in the goal's context; facts are all
+                        named theorems it used that M does not name, minus logic and
+                        internals; subgoals counts the goals before it
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone.
@@ -118,6 +119,15 @@ fun extern_fact ctxt name =
     val xname = Name_Space.extern ctxt space name;
   in if Name_Space.intern space xname = name then SOME xname else NONE end;
 
+(*logic, type classes and definitional internals that no proof method needs as a fact*)
+fun plumbing name =
+  let val base = Long_Name.base_name name in
+    exists (fn thy => String.isPrefix (thy ^ ".") name) ["Pure", "HOL"] orelse
+    member (op =) ["super", "termination", "cases", "exhaust"] base orelse
+    exists (fn p => String.isPrefix p base) ["arity_", "classrel_"] orelse
+    exists (fn s => String.isSubstring s name) ["accp", "fundef_", "_cong"]
+  end;
+
 (*named theorems the proof depends on, stopping at each; forked proofs are joined first*)
 fun used_rules st text () =
   let
@@ -130,13 +140,15 @@ fun used_rules st text () =
     val deps = Thm_Deps.thm_deps thy [Thm.close_derivation Position.none goal];
     val simps = map (#1 o #1) (Raw_Simplifier.dest_simps (simpset_of ctxt));
     val words = Token.explode (Thy_Header.get_keywords thy) Position.none text |> map Token.content_of;
-    fun rule (name, i) =
+    fun named name xname = exists (member (op =) words) [name, xname];
+    fun pick keep (name, i) =
       (case extern_fact ctxt name of
-        SOME xname =>
-          if member (op =) simps name orelse exists (member (op =) words) [name, xname]
-          then SOME (xname ^ Thm_Name.print_suffix (name, i)) else NONE
+        SOME xname => if keep name xname then SOME (xname ^ Thm_Name.print_suffix (name, i)) else NONE
       | NONE => NONE);
-  in map_filter (rule o #2) deps end;
+    val rule = pick (fn name => fn xname => member (op =) simps name orelse named name xname);
+    val fact = pick (fn name => fn xname => not (named name xname orelse plumbing name));
+    val names = map #2 deps;
+  in (map_filter rule names, distinct (op =) (map_filter fact names)) end;
 
 
 (* goal features *)
@@ -295,7 +307,9 @@ val _ =
 val _ =
   register "linter_used_rules" (fn limit => fn [text] => fn st =>
     ("closes",
-      [("rules", space_implode " " (Timeout.apply limit (used_rules st text) ())),
-       ms "subgoals" (nsubgoals (Toplevel.proof_of st))]));
+      let val (rules, facts) = Timeout.apply limit (used_rules st text) () in
+        [("rules", space_implode " " rules), ("facts", space_implode " " facts),
+         ms "subgoals" (nsubgoals (Toplevel.proof_of st))]
+      end));
 
 end;
