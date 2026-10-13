@@ -38,6 +38,8 @@ def undo():
 
 
 if __name__ == "__main__":
+    if not BOOST.exists():
+        sys.exit(f"no {BOOST}: this is not the timing machine")
     undo() if "--undo" in sys.argv else setup("--boost" in sys.argv)
     print("governor", (CPUS / "cpu0/cpufreq/scaling_governor").read_text().strip(),
           "boost", BOOST.read_text().strip())
