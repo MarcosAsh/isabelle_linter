@@ -51,4 +51,8 @@ lemma u7:
   shows "A \<or> B"
   using assms by simp
 
+(* nothing, though rev_append is not needed: a schematic goal's proof chooses its statement *)
+schematic_goal u8: "length [a, b] = ?n"
+  by (simp add: rev_append)
+
 end

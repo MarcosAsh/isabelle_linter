@@ -189,9 +189,11 @@ object Lemma {
   }
 
   /* goals whose result is stored as a theorem, so that Thm.consolidate_theory waits for their
-    forked proofs; an interpretation's or instance's proofs are not, and may fail unseen */
+    forked proofs; an interpretation's or instance's proofs are not, and may fail unseen. No
+    schematic_goal: its proof chooses the statement, so a shorter or faster proof can prove a
+    different theorem (e.g. synthesise a different program for a later concrete_definition) */
   val theorem_commands: Set[String] =
-    Set("lemma", "theorem", "corollary", "proposition", "schematic_goal")
+    Set("lemma", "theorem", "corollary", "proposition")
 
   /* the command that closes the goal opened by cmds(i) */
   def goal_end(cmds: List[Cmd], i: Int): Option[Int] = {
