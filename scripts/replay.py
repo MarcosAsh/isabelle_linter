@@ -115,7 +115,7 @@ def replay(entry, patched, new_afp, out, isabelle, build):
             return found
         log = out / "logs" / f"{entry}.build"
         with open(log, "w") as f:
-            rc = subprocess.run([isabelle, "build", "-d", new_afp, "-d", out, "-o", "document=false", *sessions],
+            rc = subprocess.run([isabelle, "build", "-d", new_afp, "-d", target, "-o", "document=false", *sessions],
                                 stdout=f, stderr=subprocess.STDOUT).returncode
         if rc == 0:
             for e in live:

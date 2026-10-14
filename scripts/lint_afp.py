@@ -33,18 +33,41 @@ def copy(entry, out, afp=AFP, suffix=SUFFIX):
     shutil.copytree(afp / entry, target)
     root = (target / "ROOT").read_text()
     names = SESSION.findall(root)
-    for name in names:
-        q = re.escape(name)
-        root = re.sub(r'(session\s+)"?' + q + r'"?(?![\w+.-])', rf'\1"{name}{suffix}"', root)
-        root = re.sub(r'(=\s*)"?' + q + r'"?(\s*\+)', rf'\1"{name}{suffix}"\2', root)
-    (target / "ROOT").write_text(root)
+    (target / "ROOT").write_text(rename_root(root, names, suffix))
     for thy in target.rglob("*.thy"):
         text = thy.read_text()
         for name in names:
             text = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + suffix + ".", text)
         thy.write_text(text)
-    (out / "ROOTS").write_text("\n".join(sorted(p.parent.name for p in out.glob("*/ROOT"))) + "\n")
     return [n + suffix for n in names]
+
+
+ROOT_KEYWORDS = {"chapter", "session", "sessions", "theories", "options", "description", "directories",
+                 "document_files", "document_theories", "export_files", "export_classpath", "global_theories"}
+
+
+# session names, parents, `sessions` lists and qualified theory names of the entry's own sessions;
+# no PDF document
+def rename_root(root, names, suffix):
+    def whole(name):
+        return r'(?<![\w+.-])"?' + re.escape(name) + r'"?(?![\w+.-])'
+
+    lines, section = [], None
+    for line in root.splitlines(keepends=True):
+        keyword = re.match(r"\s*([a-z_]+)\b", line)
+        if keyword and keyword.group(1) in ROOT_KEYWORDS:
+            section = keyword.group(1)
+        for name in names:
+            if section == "session":
+                line = re.sub(r'(session\s+)' + whole(name), rf'\1"{name}{suffix}"', line)
+                line = re.sub(r'(=\s*)' + whole(name) + r'(\s*\+)', rf'\1"{name}{suffix}"\2', line)
+            elif section == "sessions":
+                line = re.sub(whole(name), f'"{name}{suffix}"', line)
+        lines.append(line)
+    root = re.sub(r'\bdocument\s*=\s*"?pdf"?', "document = false", "".join(lines))
+    for name in names:
+        root = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + suffix + ".", root)
+    return root
 
 
 # its fixes are in the copy: the run ended and applied any it found
@@ -64,9 +87,9 @@ def lint(name, entry, out, options):
         if not finished(logs / f"{s}.log"):
             (logs / f"{s}.tsv").unlink(missing_ok=True)
             question_log = ["-o", f"linter_log={(logs / f'{s}.tsv').resolve()}"]
-            run(["isabelle", "linter", "-l", name, "-F", *options, *question_log, "-d", AFP, "-d", out, s],
+            run(["isabelle", "linter", "-l", name, "-F", *options, *question_log, "-d", AFP, "-d", out / entry, s],
                 logs / f"{s}.log")
-    rc = run(["isabelle", "build", "-d", AFP, "-d", out, "-o", "document=false", *sessions],
+    rc = run(["isabelle", "build", "-d", AFP, "-d", out / entry, "-o", "document=false", *sessions],
              logs / f"{entry}.build")
     print(entry, "ok" if rc == 0 else "FAILED", flush=True)
 
