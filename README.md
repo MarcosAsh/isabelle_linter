@@ -74,31 +74,6 @@ taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.ts
 `-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
 functions, which shows where a slow step spends its time.
 
-`scripts/census_build.py` builds the whole AFP this way (`-j`, `-t` for jobs and threads). The
-census sample is the 150 entries in `scripts/entries.txt`:
-
-```bash
-isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_slow -X large \
-  -j 3 -o threads=6 -o build_timing_threshold=0.01
-```
-
-## Scripts
-
-- `lint_afp.py LINT -n 20`: run a lint with `-F` on copies of AFP entries and rebuild them;
-  `-o OPTION` goes to the linter, every question goes to `logs/SESSION.tsv`; `-s census/LINT`
-  summarises.
-- `census_build.py`: build the AFP with command timings, for `linter_census`.
-- `replay.py PATCHED NEW_AFP OUT`: apply the edits in patched copies to another AFP release
-  (`-i` its isabelle) and build; edits that break are undone, `OUT/replay.tsv` says which survive.
-- `fragility.py CENSUS OLD_THYS NEW_THYS`: which census steps changed between two AFP versions, by
-  step time and method.
-- `edit_summary.py LOG.tsv...`: hit rate, time saved, search time and winning edit kinds from
-  faster_step question logs; with `faster_step_try0`, the same for try0 and for the better of the two.
-- `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
-- `plot_steps.py`: the step-time figures.
-- `timing_box.py`: quiet the timing machine (root; `--undo`).
-- `peephole.py`: lookup table of winning rewrites from `linter_collect` output.
-
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,
