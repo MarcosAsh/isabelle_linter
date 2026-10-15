@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run a lint with -F on copies of AFP entries, then rebuild the copies to check the fixes.
 
-Usage: scripts/lint_afp.py LINT [-o OPTION]... ENTRY...  |  ... LINT [-o OPTION]... -n N  |  ... -s DIR
-Copies go to census/LINT, logs and question logs (SESSION.tsv) to census/LINT/logs; built entries
-and finished sessions are skipped. -o options go to the linter.
+Usage: scripts/lint_afp.py LINT [-O DIR] [-o OPTION]... ENTRY...  |  ... -n N  |  ... -s DIR
+Copies go to DIR (default census/LINT), logs and question logs (SESSION.tsv) to DIR/logs; built
+entries and finished sessions are skipped. -o options go to the linter.
 """
 
 import os
@@ -123,11 +123,13 @@ if __name__ == "__main__":
         summary(Path(args[1]))
     else:
         name, rest, options = args[0], args[1:], []
+        out = Path("census") / name
+        if rest[:1] == ["-O"]:
+            out, rest = Path(rest[1]), rest[2:]
         while rest[:1] == ["-o"]:
             options, rest = options + rest[:2], rest[2:]
         entries = rest if rest[:1] != ["-n"] else \
             sorted(random.Random(1).sample(SAMPLE.read_text().split(), int(rest[1])))
-        out = Path("census") / name
         (out / "logs").mkdir(parents=True, exist_ok=True)
         for entry in entries:
             if not (out / "logs" / f"{entry}.build").exists():

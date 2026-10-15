@@ -24,6 +24,12 @@ public option faster_step_speedup : real = 2
 public option faster_step_runs : int = 3
   -- "faster_step: the winner and the original are re-timed this many times; medians are compared"
 
+public option faster_step_try0 : bool = false
+  -- "faster_step: also run try0 on each step it searches and re-time try0's proof, for the question log (HOL only)"
+
+public option faster_step_try0_timeout : real = 0
+  -- "faster_step: seconds for each method try0 runs, 0 for try0's own default (try0_default_timeout)"
+
 public option collect_timeout : real = 2
   -- "linter_collect: seconds each method gets on a step"
 
