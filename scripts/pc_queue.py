@@ -3,8 +3,9 @@
 
 Usage: scripts/pc_queue.py start | stop       (from the repo root; finished stages are skipped)
 Stages: re-times with boost off (the full-AFP plan census/retime_full.tsv, the 21-entry winners
-before and after), then faster_step with boost on over scripts/faster_entries.txt (most slow-step
-time first; lint_afp.py and linter_retime resume). Boost is set with `sudo -n tee` (sudoers rule).
+before and after), then faster_step with boost on and try0: the 21 pilot entries again on the
+current code (scripts/faster_pilot.txt, into census/faster_pilot), then the entries in
+scripts/faster_entries.txt (most slow-step time first; lint_afp.py and linter_retime resume). Boost is set with `sudo -n tee` (sudoers rule).
 Boost-off stages are skipped while boost cannot be set. A stage whose log stops growing for STALL
 seconds is killed and resumed, at most 3 times. External solvers are made the kernel's first OOM
 victims, so a runaway veriT kills itself, not the prover.
@@ -117,8 +118,12 @@ def queue():
     retime("retime full", "census/retime_full.tsv", "retime_full_out", ["-o", "retime_runs=1"])
     retime("winners before", "census/winners_21_retime.tsv", "winners_before")
     retime("winners after", "census/winners_21_retime_patched.tsv", "winners_after", dirs=patched_dirs())
-    entries = (REPO / "scripts/faster_entries.txt").read_text().split()
     options = ["-o", "faster_step_slow=3", "-o", "linter_timeout=300", "-o", "faster_step_try0=true", *THREADS]
+    pilot = (REPO / "scripts/faster_pilot.txt").read_text().split()
+    stage("faster pilot", PIN + ["python3", "scripts/lint_afp.py", "faster_step", "-O", "census/faster_pilot",
+                                 *options, *pilot],
+          REPO / "census/faster_pilot.out", watch=REPO / "census/faster_pilot/logs", stall=2 * STALL)
+    entries = (REPO / "scripts/faster_entries.txt").read_text().split()
     stage("faster afp", PIN + ["python3", "scripts/lint_afp.py", "faster_step", *options, *entries],
           REPO / "census/faster_step/afp.out", watch=REPO / "census/faster_step/logs", stall=2 * STALL)
     log("queue done")
