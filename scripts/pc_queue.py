@@ -6,7 +6,8 @@ Stages: re-times with boost off (the full-AFP plan census/retime_full.tsv, the 2
 before and after), then faster_step with boost on over scripts/faster_entries.txt (most slow-step
 time first; lint_afp.py and linter_retime resume). Boost is set with `sudo -n tee` (sudoers rule).
 Boost-off stages are skipped while boost cannot be set. A stage whose log stops growing for STALL
-seconds is killed and resumed, at most 3 times.
+seconds is killed and resumed, at most 3 times. External solvers are made the kernel's first OOM
+victims, so a runaway veriT kills itself, not the prover.
 Log: census/pc_queue.log, stages done: census/pc_queue.done
 """
 
@@ -15,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +30,7 @@ DONE = REPO / "census/pc_queue.done"
 PID = REPO / "census/pc_queue.pid"
 PIN = ["taskset", "-c", "2-7"]
 THREADS = ["-o", "threads=6"]
+SOLVERS = {"veriT", "z3", "cvc5", "cvc4", "eprover", "vampire", "zipperposition", "SPASS"}
 
 
 def log(text):
@@ -121,6 +124,18 @@ def queue():
     log("queue done")
 
 
+# solvers run seconds to minutes, and the ones that blow up memory run long, so 1 s polling catches them
+def guard_prover():
+    while True:
+        for proc in Path("/proc").glob("[0-9]*"):
+            try:
+                if (proc / "comm").read_text().strip() in SOLVERS:
+                    (proc / "oom_score_adj").write_text("1000")
+            except OSError:
+                pass
+        time.sleep(1)
+
+
 def running():
     return PID.exists() and Path(f"/proc/{PID.read_text().strip()}").exists()
 
@@ -131,6 +146,7 @@ def start():
     PID.write_text(str(os.getpid()))
     os.environ["PATH"] = str(Path.home() / "opt/isabelle/Isabelle2025-2/bin") + ":" + os.environ["PATH"]
     DONE.touch()
+    threading.Thread(target=guard_prover, daemon=True).start()
     queue()
 
 
