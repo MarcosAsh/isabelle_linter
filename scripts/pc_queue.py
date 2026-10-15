@@ -4,7 +4,8 @@
 Usage: scripts/pc_queue.py start | stop       (from the repo root; finished stages are skipped)
 Stages: re-times with boost off (the full-AFP plan census/retime_full.tsv, the 21-entry winners
 before and after), then faster_step with boost on and try0: the 21 pilot entries again on the
-current code (scripts/faster_pilot.txt, into census/faster_pilot), then the entries in
+current code (scripts/faster_pilot.txt, into census/faster_pilot), the machine-generated Munkres
+corpus (~/dev/corpora/munkres, into census/munkres), then the entries in
 scripts/faster_entries.txt (most slow-step time first; lint_afp.py and linter_retime resume). Boost is set with `sudo -n tee` (sudoers rule).
 Boost-off stages are skipped while boost cannot be set. A stage whose log stops growing for STALL
 seconds is killed and resumed, at most 3 times. External solvers are made the kernel's first OOM
@@ -24,6 +25,7 @@ from pathlib import Path
 REPO = Path.home() / "dev/isabelle_linter"
 DSP = Path.home() / "dev/audit_dsp"
 AFP = Path.home() / "dev/etc/afp/afp-2026-10-01/thys"
+MUNKRES = Path.home() / "dev/corpora/munkres/thys"
 BOOST = Path("/sys/devices/system/cpu/cpufreq/boost")
 STALL = 3600
 LOG = REPO / "census/pc_queue.log"
@@ -113,6 +115,22 @@ def patched_dirs():
     return [arg for e in entries for arg in ("-d", f"census/faster_step/{e}")]
 
 
+# the machine-generated Munkres corpus: census build with boost on like the AFP's, then both lints
+def munkres():
+    out = REPO / "census/munkres"
+    out.mkdir(parents=True, exist_ok=True)
+    dirs = ["-d", str(MUNKRES), "-D", str(MUNKRES / "Munkres")]
+    stage("munkres build", PIN + ["isabelle", "build", "-c", "-v", *dirs, *THREADS, "-o", "build_timing_threshold=0.01",
+                                  "-o", "document=false"], out / "build.log")
+    stage("munkres census", ["isabelle", "linter_census", *dirs, "-n", "50", "-O", str(out / "timings.tsv")],
+          out / "census.txt")
+    lint = PIN + ["env", f"AFP={MUNKRES}", "python3", "scripts/lint_afp.py"]
+    stage("munkres unused", lint + ["unused", "-O", str(out / "unused"), *THREADS, "Munkres"], out / "unused.out")
+    options = ["-o", "faster_step_slow=0.5", "-o", "linter_timeout=300", "-o", "faster_step_try0=true", *THREADS]
+    stage("munkres faster", lint + ["faster_step", "-O", str(out / "faster_step"), *options, "Munkres"],
+          out / "faster_step.out")
+
+
 def queue():
     dsp("faster_step_01", "faster_step", ["-o", "faster_step_slow=0.1"])
     retime("retime full", "census/retime_full.tsv", "retime_full_out", ["-o", "retime_runs=1"])
@@ -123,6 +141,7 @@ def queue():
     stage("faster pilot", PIN + ["python3", "scripts/lint_afp.py", "faster_step", "-O", "census/faster_pilot",
                                  *options, *pilot],
           REPO / "census/faster_pilot.out", watch=REPO / "census/faster_pilot/logs", stall=2 * STALL)
+    munkres()
     entries = (REPO / "scripts/faster_entries.txt").read_text().split()
     stage("faster afp", PIN + ["python3", "scripts/lint_afp.py", "faster_step", *options, *entries],
           REPO / "census/faster_step/afp.out", watch=REPO / "census/faster_step/logs", stall=2 * STALL)
