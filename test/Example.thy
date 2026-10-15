@@ -35,4 +35,12 @@ lemma l10: "sum_list (map (\<lambda>x. x + 1) xs) = sum_list xs + length (xs::na
 lemma l11: "length (filter P (xs @ ys)) = length (filter P xs) + length (filter P ys)"
   by (induction xs) (fastforce+)
 
+text \<open>Two slow steps in one lemma: -F applies both.\<close>
+
+lemma l12: "(x::nat) + y + z = z + y + x \<and> (a::int) * (b + c) - a * c = a * b"
+proof
+  show "(x::nat) + y + z = z + y + x" by (smt (verit) add.commute add.assoc)
+  show "(a::int) * (b + c) - a * c = a * b" by (smt (verit) distrib_left)
+qed
+
 end

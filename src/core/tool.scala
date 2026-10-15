@@ -8,20 +8,27 @@ import isabelle._
 object Tool {
   val lints: List[Lint] = List(Unused, Faster_Step)
 
-  /* one fix per lemma: each was checked alone */
+  /* each fix was checked alone: combine edits of disjoint ranges, otherwise one fix per lemma */
+  def lemma_fix(fs: List[Finding]): String = {
+    val edits = fs.flatMap(_.edit)
+    val ranges = edits.map(_._1).sortBy(_.start)
+    val disjoint = ranges.zip(ranges.drop(1)).forall({ case (a, b) => a.stop <= b.start })
+    if (edits.length == fs.length && disjoint) fs.head.lemma.replace_all(edits) else fs.head.fix.get
+  }
+
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
     for ((theory, fs) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
       val path = theory.path
       val text = File.read(path)
-      val fixes = fs.groupBy(_.lemma.start).values.map(_.head).toList.sortBy(_.lemma.start).reverse
+      val lemmas = fs.groupBy(_.lemma.start).values.toList.sortBy(_.head.lemma.start).reverse
       val fixed =
-        fixes.foldLeft(text) { (t, f) =>
-          val l = f.lemma
+        lemmas.foldLeft(text) { (t, lfs) =>
+          val l = lfs.head.lemma
           if (t.substring(l.start, l.stop) != l.source) error("File changed: " + path)
-          t.substring(0, l.start) + f.fix.get + t.substring(l.stop)
+          t.substring(0, l.start) + lemma_fix(lfs) + t.substring(l.stop)
         }
       File.write(path, fixed)
-      progress.echo("Fixed " + fixes.length + " lemmas in " + path.implode)
+      progress.echo("Fixed " + lemmas.length + " lemmas (" + fs.length + " findings) in " + path.implode)
     }
 
   val linter_tool: Isabelle_Tool =

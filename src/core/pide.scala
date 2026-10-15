@@ -157,8 +157,10 @@ object Pide {
 }
 
 
-/* fix: the checked new text of the lemma */
-sealed case class Finding(lint: String, lemma: Lemma, line: Int, message: String, fix: Option[String] = None)
+/* fix: the checked new text of the lemma; edit: the same fix as a replacement of one range,
+   so that fixes of disjoint ranges in one lemma can be combined */
+sealed case class Finding(lint: String, lemma: Lemma, line: Int, message: String, fix: Option[String] = None,
+  edit: Option[(Text.Range, String)] = None)
 
 /* ask is called in rounds and sees all answers so far; report runs when it asks nothing new */
 abstract class Lint {

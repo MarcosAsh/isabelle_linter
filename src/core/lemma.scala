@@ -50,8 +50,13 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
   def line(offset: Int): Int = lines.position(offset).line1
   def line: Int = line(start)
 
-  def replace(range: Text.Range, s: String): String =
-    source.substring(0, range.start - start) + s + source.substring(range.stop - start)
+  def replace(range: Text.Range, s: String): String = replace_all(List(range -> s))
+
+  /* ranges must be disjoint */
+  def replace_all(edits: List[(Text.Range, String)]): String =
+    edits.sortBy(_._1.start).reverse.foldLeft(source) { case (t, (r, s)) =>
+      t.substring(0, r.start - start) + s + t.substring(r.stop - start)
+    }
 
   /* the source with ranges deleted, and any keyword left empty */
   def without(ranges: List[Text.Range]): String = {

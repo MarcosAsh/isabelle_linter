@@ -193,6 +193,7 @@ object Faster_Step extends Lint {
       (method, before, after) <- check(lemma, step, answers, options).toOption.flatten.toList
     } yield {
       val message = "`by " + method + "` takes " + after + " ms instead of " + before + " ms for `by " + step.methods + "`"
-      Finding(name, lemma, lemma.line(step.cmd.range.start), message, Some(lemma.replace(step.cmd.range, "by " + method)))
+      val edit = step.cmd.range -> ("by " + method)
+      Finding(name, lemma, lemma.line(step.cmd.range.start), message, Some(lemma.replace_all(List(edit))), Some(edit))
     }
 }
