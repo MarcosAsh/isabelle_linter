@@ -27,14 +27,13 @@ object Census {
 
   def read_session(store: Store, session: String): (Double, List[Timing]) =
     using(store.open_database(session)) { db =>
-      val timing = store.read_session_timing(db, session)
-      val cpu = Properties.get(timing, "cpu").map(Value.Double.parse).getOrElse(0.0)
+      val cpu = store.read_session_timing(db, session).ml_timing.cpu.seconds
       val timings =
         for (props <- Properties.uncompress(store.read_command_timings(db, session)))
         yield {
           val file = Properties.get(props, Markup.FILE).getOrElse("")
           val offset = Properties.get(props, Markup.OFFSET).map(Value.Int.parse).getOrElse(1)
-          Timing(session, file, offset, Markup.Name.get(props), Markup.Elapsed.get(props))
+          Timing(session, file, offset, Markup.Name.get(props), Markup.Timing_Properties.Elapsed.get(props))
         }
       (cpu, timings)
     }
@@ -65,7 +64,7 @@ object Census {
   /* the report: shares of the stored time, and the slowest steps */
 
   def share(part: Double, all: Double): String =
-    if (all == 0) "-" else String.format("%.1f%%", 100 * part / all)
+    if (all == 0) "-" else Library.format("%.1f%%", 100 * part / all)
 
   /* a theory outside every heap is checked again by each session that imports it; keep each
     command once, with its lowest time, the one least distorted by load */
@@ -78,14 +77,14 @@ object Census {
     val timings = distinct(sessions).sortBy(-_.seconds)
     val stored = timings.map(_.seconds).sum
 
-    progress.echo(sessions.length + " sessions, " + String.format("%.0f", cpu) + " s CPU, " +
-      all + " stored commands, " + timings.length + " distinct, " + String.format("%.0f", stored) + " s (" +
+    progress.echo(sessions.length.toString + " sessions, " + Library.format("%.0f", cpu) + " s CPU, " +
+      all + " stored commands, " + timings.length + " distinct, " + Library.format("%.0f", stored) + " s (" +
       share(stored, cpu) + " of CPU)")
 
     progress.echo("\nby command:")
     for ((name, ts) <- timings.groupBy(_.name).toList.sortBy(-_._2.map(_.seconds).sum).take(12)) {
       val t = ts.map(_.seconds).sum
-      progress.echo(String.format("  %-14s %7.0f s  %6s of CPU  %5d commands", name, t, share(t, cpu), ts.length))
+      progress.echo(Library.format("  %-14s %7.0f s  %6s of CPU  %5d commands", name, t, share(t, cpu), ts.length))
     }
 
     progress.echo("\nconcentration:")
@@ -95,12 +94,12 @@ object Census {
 
     progress.echo("\nslowest:")
     for (t <- timings.take(top)) {
-      progress.echo(String.format("  %7.2f s  %-24s %s", t.seconds, t.session, t.text))
+      progress.echo(Library.format("  %7.2f s  %-24s %s", t.seconds, t.session, t.text))
     }
   }
 
   def write_tsv(path: Path, sessions: List[(String, Double, List[Timing])]): Unit = {
-    val clean = (s: String) => s.replace('\t', ' ')
+    val clean = (s: String) => s.replace('\t', ' ').nn
     val lines =
       for (t <- distinct(sessions).sortBy(t => (t.session, t.file, t.offset)))
       yield List(t.session, t.file, t.offset.toString, t.name, t.seconds.toString, clean(t.text)).mkString("\t")

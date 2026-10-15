@@ -63,11 +63,15 @@ fun run_by st text () =
     else ignore (Proof.local_terminal_proof methods pre)
   end;
 
+(*a theory command in the text starts from this theory*)
+fun init_theory thy () = {skip_theory = false, theory = thy};
+
 (*no position: markup would go into the theory; forked proofs must finish too*)
 fun run_text st0 text () =
   let
     val thy = Toplevel.theory_of st0;
-    val st = fold (Toplevel.command_exception false) (Outer_Syntax.parse_text thy (K thy) Position.none text) st0;
+    val trs = Outer_Syntax.parse_text thy (init_theory thy) Position.none text;
+    val st = fold Toplevel.command_exception trs st0;
   in
     if Toplevel.is_proof st orelse Toplevel.is_skipped_proof st then error "Unfinished proof"
     else Thm.consolidate_theory (Toplevel.theory_of st)

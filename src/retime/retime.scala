@@ -76,7 +76,7 @@ object Retime {
     val counts = report.entries.groupMapReduce(_.name)(_.count)(_ + _).toList.sortBy(-_._2)
     for (((name, count), i) <- counts.take(profile_top).zipWithIndex)
     yield List(row.session, row.file, row.offset.toString, i.toString, count.toString, total.toString,
-      name.replace('\t', ' ')).mkString("\t")
+      name.replace('\t', ' ').nn).mkString("\t")
   }
 
   /* lines for the timings and, if profile, for the profiles */
@@ -98,8 +98,8 @@ object Retime {
               report <- profile_step(checked, lemma, step, timeout, progress)
             } yield profile_lines(row, report)
 
-          progress.echo(String.format("retime: %8.2f s -> %s %s", row.seconds,
-            median.map(ms => String.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
+          progress.echo(Library.format("retime: %8.2f s -> %s %s", row.seconds,
+            median.map(ms => Library.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
           val line =
             List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
               List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,

@@ -25,7 +25,7 @@ object Tool {
         lemmas.foldLeft(text) { (t, lfs) =>
           val l = lfs.head.lemma
           if (t.substring(l.start, l.stop) != l.source) error("File changed: " + path)
-          t.substring(0, l.start) + lemma_fix(lfs) + t.substring(l.stop)
+          t.substring(0, l.start).nn + lemma_fix(lfs) + t.substring(l.stop)
         }
       File.write(path, fixed)
       progress.echo("Fixed " + lemmas.length + " lemmas (" + fs.length + " findings) in " + path.implode)

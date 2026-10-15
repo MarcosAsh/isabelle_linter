@@ -31,7 +31,7 @@ object Syntax {
 
   /* text after a deletion */
   def tidy(s: String): String =
-    s.replaceAll(empty_keyword, "").replaceAll(empty_section, "").replaceAll(bare_method, "$1 $2")
+    s.replaceAll(empty_keyword, "").nn.replaceAll(empty_section, "").nn.replaceAll(bare_method, "$1 $2").nn
 
   /* a fact: name, optional (selection), optional [attributes] */
 

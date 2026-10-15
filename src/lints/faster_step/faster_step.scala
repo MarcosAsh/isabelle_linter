@@ -55,8 +55,8 @@ object Faster_Step extends Lint {
     val start = step.cmd.body.head.range.start
 
     def cut(fact: List[Tok]): String = {
-      val before = step.methods.substring(0, fact.head.range.start - start).stripTrailing
-      val after = step.methods.substring(fact.last.range.stop - start).stripLeading
+      val before = step.methods.substring(0, fact.head.range.start - start).nn.stripTrailing.nn
+      val after = step.methods.substring(fact.last.range.stop - start).nn.stripLeading.nn
       val joined = if (after.startsWith(")")) before + after else before + " " + after
       Syntax.tidy("by " + joined).stripPrefix("by ")
     }

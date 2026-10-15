@@ -43,8 +43,9 @@ object Pide {
     /* no forked proofs: a question must see every proof it starts fail or finish, and an
       unnamed or non-theorem result is not joined by Thm.consolidate_theory */
     val resources =
-      Headless.Resources.make(options + "parallel_proofs=0", logic, session_dirs = dirs,
-        include_sessions = deps.sessions_structure.imports_topological_order, progress = progress)
+      Headless.Resources.make(options + "parallel_proofs=0", logic, Logger.make_progress(progress),
+        session_dirs = dirs, include_sessions = deps.sessions_structure.imports_topological_order,
+        progress = progress)
     val session = resources.start_session(progress = progress)
     try {
       val hol = structure.build_requirements(List(logic)).contains("HOL")
@@ -101,7 +102,7 @@ object Pide {
 
   /* one row per question: lint, function, key, args, verdict, then the answer's properties */
   private def write_log(path: Path, lint: String, questions: List[Question], answers: Answers): Unit = {
-    def clean(s: String): String = s.replace('\t', ' ').replace('\n', ' ')
+    def clean(s: String): String = s.replace('\t', ' ').nn.replace('\n', ' ').nn
     val rows =
       for (q <- questions) yield {
         val a = answers(q.key)
