@@ -20,7 +20,8 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         the goals before it
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
-when a question runs alone.
+when a question runs alone. A question cancelled while it runs answers "interrupted", with
+its time so far.
 *)
 
 structure Linter_Query =
@@ -203,6 +204,13 @@ fun ms name n = (name, string_of_int n);
 fun times ({elapsed, cpu, gc}: Timing.timing) =
   map (fn (name, t) => ms name (Time.toMilliseconds t)) [("ms", elapsed), ("cpu", cpu), ("gc", gc)];
 
+(*cancelled from outside (overlay removed, or every task cancelled when the heap runs out): say so
+  before passing the interrupt on, so that the question is not just unanswered*)
+fun interrupted instance start exn =
+  (Thread_Attributes.uninterruptible_body (fn _ =>
+    output instance "interrupted" (times (Timing.result start)));
+   Exn.reraise exn);
+
 fun register name check =
   Command.print_function name
     (fn {args = instance :: timeout_ms :: args, ...} =>
@@ -210,11 +218,13 @@ fun register name check =
         print_fn = fn _ => fn st =>
           let
             val limit = Time.fromMilliseconds (the (Int.fromString timeout_ms));
+            val start = Timing.start ();
             val (verdict, props) =
-              (case Exn.result (check limit args) st of
+              (*Exn.result would pass interrupts on before we see them*)
+              (case Exn.capture (check limit args) st of
                 Exn.Res res => res
               | Exn.Exn exn =>
-                  if Exn.is_interrupt exn then Exn.reraise exn
+                  if Exn.is_interrupt exn then interrupted instance start exn
                   else ("fails", [("message", Runtime.exn_message exn)]));
           in output instance verdict props end}
     | _ => NONE);
