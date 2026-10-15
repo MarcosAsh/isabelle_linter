@@ -18,7 +18,7 @@ Example.thy:9: [faster_step] `by (simp add: distrib_left)` takes 1 ms instead of
 
 ## Setup
 
-You need Isabelle2025-2.
+You need Isabelle2026 (tested with Isabelle2026-RC4). The main branch is for Isabelle2025-2.
 
 ```bash
 isabelle components -u ~/dev/isabelle_linter
