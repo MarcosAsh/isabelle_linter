@@ -35,11 +35,16 @@ def copy(entry, out, afp=AFP, suffix=SUFFIX):
     names = SESSION.findall(root)
     (target / "ROOT").write_text(rename_root(root, names, suffix))
     for thy in target.rglob("*.thy"):
-        text = thy.read_text()
-        for name in names:
-            text = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + suffix + ".", text)
-        thy.write_text(text)
+        thy.write_text(qualify(thy.read_text(), names, suffix))
     return [n + suffix for n in names]
+
+
+# theory names qualified by one of the sessions get the suffix on the session; file names
+# like PAC_Checker.thy are left alone
+def qualify(text, names, suffix):
+    for name in names:
+        text = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)(?!thy\b)", name + suffix + ".", text)
+    return text
 
 
 ROOT_KEYWORDS = {"chapter", "session", "sessions", "theories", "options", "description", "directories",
@@ -65,9 +70,7 @@ def rename_root(root, names, suffix):
                 line = re.sub(whole(name), f'"{name}{suffix}"', line)
         lines.append(line)
     root = re.sub(r'\bdocument\s*=\s*"?pdf"?', "document = false", "".join(lines))
-    for name in names:
-        root = re.sub(r"(?<![\w.])" + re.escape(name) + r"\.(?=\w)", name + suffix + ".", root)
-    return root
+    return qualify(root, names, suffix)
 
 
 # its fixes are in the copy: the run ended and applied any it found
