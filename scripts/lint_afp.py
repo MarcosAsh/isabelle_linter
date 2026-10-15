@@ -94,7 +94,9 @@ def lint(name, entry, out, options):
                 logs / f"{s}.log")
     rc = run(["isabelle", "build", "-d", AFP, "-d", out / entry, "-o", "document=false", *sessions],
              logs / f"{entry}.build")
-    print(entry, "ok" if rc == 0 else "FAILED", flush=True)
+    # a session whose lint stopped (e.g. the prover died) keeps its copy unpatched
+    unfinished = [s for s in sessions if not finished(logs / f"{s}.log")]
+    print(entry, "ok" if rc == 0 else "FAILED", *(["lint unfinished:", *unfinished] if unfinished else []), flush=True)
 
 
 def summary(out):

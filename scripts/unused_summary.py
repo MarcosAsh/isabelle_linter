@@ -79,7 +79,7 @@ def summarise(name, logs, tsvs, build):
     return dict(name=name, machine=machine(text), lemmas=sum(map(int, re.findall(r"^(\d+) of \d+ lemmas check", text, re.M))),
                 steps=sum(map(count_steps, lemmas.values())), findings=len(findings), pieces=pieces,
                 fixed=sum(map(int, re.findall(r"^Fixed (\d+) lemmas", text, re.M))), timed=timed,
-                questions=sum(verdicts.values()), unanswered=verdicts["unanswered"], timeouts=verdicts["timeout"],
+                questions=sum(verdicts.values()), unanswered=verdicts["unanswered"] + verdicts["interrupted"], timeouts=verdicts["timeout"],
                 build=build_status(build.read_text()) if build.exists() else "none", per_file=Counter(f["file"] for f in findings),
                 findings_list=findings)
 
