@@ -80,10 +80,20 @@ def finished(log):
     return bool(found) and (found.group(1) == "0" or "Fixed " in text)
 
 
+def patched_sessions(entry):
+    return [n + SUFFIX for n in SESSION.findall((AFP / entry / "ROOT").read_text())]
+
+
+# built, and every lint finished; a lint that stopped (e.g. the prover died) runs again
+def done(entry, out):
+    logs = out / "logs"
+    return (logs / f"{entry}.build").exists() and all(finished(logs / f"{s}.log") for s in patched_sessions(entry))
+
+
 # a copy with finished sessions is resumed, not copied again
 def lint(name, entry, out, options):
     logs = out / "logs"
-    sessions = [n + SUFFIX for n in SESSION.findall((AFP / entry / "ROOT").read_text())]
+    sessions = patched_sessions(entry)
     if not any(finished(logs / f"{s}.log") for s in sessions):
         copy(entry, out)
     for s in sessions:
@@ -94,7 +104,7 @@ def lint(name, entry, out, options):
                 logs / f"{s}.log")
     rc = run(["isabelle", "build", "-d", AFP, "-d", out / entry, "-o", "document=false", *sessions],
              logs / f"{entry}.build")
-    # a session whose lint stopped (e.g. the prover died) keeps its copy unpatched
+    # a session whose lint stopped keeps its copy unpatched until a re-run finishes it
     unfinished = [s for s in sessions if not finished(logs / f"{s}.log")]
     print(entry, "ok" if rc == 0 else "FAILED", *(["lint unfinished:", *unfinished] if unfinished else []), flush=True)
 
@@ -132,5 +142,5 @@ if __name__ == "__main__":
             sorted(random.Random(1).sample(SAMPLE.read_text().split(), int(rest[1])))
         (out / "logs").mkdir(parents=True, exist_ok=True)
         for entry in entries:
-            if not (out / "logs" / f"{entry}.build").exists():
+            if not done(entry, out):
                 lint(name, entry, out, options)

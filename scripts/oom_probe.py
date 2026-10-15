@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run out the prover's heap on purpose and check that the linter says so.
 
-Usage: scripts/oom_probe.py [--maxheap 1500M] [--lemmas 16] [--size 20000000] [--threads 8]
+Usage: scripts/oom_probe.py [--maxheap 1500M] [--lemmas 8] [--size 50000000] [--threads 4]
 
-Each lemma allocates a list of SIZE ints in its proof. Loading the theory runs them one at a time,
-but the linter's first round runs them all at once, under a prover heap capped with --maxheap.
+Each lemma allocates a list of SIZE ints in its proof (12 bytes each, 600 MB by default). Loading
+the theory runs them one at a time, but the linter's first round runs them all at once, under a
+prover heap capped with --maxheap.
 The linter of this checkout runs in an isolated USER_HOME (shared heaps, heap cap in its
 etc/settings, since the ML_OPTIONS environment variable is overridden), so the main checkout's jar
 is not rebuilt. Expect "prover: Run out of store" and then either "interrupted" answers and a
@@ -22,11 +23,18 @@ ROOT = Path(__file__).resolve().parent.parent
 ISABELLE_USER = Path.home() / ".isabelle" / "Isabelle2025-2"
 
 
+# hog builds its list with a loop: List.tabulate recurses, so it runs out of stack before heap
+HOG = """ML \\<open>
+fun hog n ctxt st =
+  let fun build 0 acc = acc | build k acc = build (k - 1) (k :: acc)
+  in if length (build n []) = n then resolve_tac ctxt @{thms TrueI} 1 st else no_tac st end
+\\<close>"""
+
+
 def theory(lemmas, size):
-    proof = (f"by (tactic \\<open>fn st => if length (List.tabulate ({size}, I)) = {size} "
-             "then resolve_tac \\<^context> @{thms TrueI} 1 st else no_tac st\\<close>)")
+    proof = f"by (tactic \\<open>hog {size} \\<^context>\\<close>)"
     body = "\n\n".join(f"lemma hog{i}: \"True\"\n  using TrueI conjI\n  {proof}" for i in range(lemmas))
-    return f"theory Oom_Probe\n  imports Main\nbegin\n\n{body}\n\nend\n"
+    return f"theory Oom_Probe\n  imports Main\nbegin\n\n{HOG}\n\n{body}\n\nend\n"
 
 
 # a USER_HOME whose components list only this checkout, with the real heaps and a capped ML heap
@@ -47,7 +55,8 @@ def run(args):
 
     env = dict(os.environ, USER_HOME=str(isolated_home(tmp, args.maxheap)))
     log = tmp / "linter.log"
-    command = ["isabelle", "linter", "-l", "unused", "-o", f"threads={args.threads}",
+    # near the cap Poly/ML collects garbage for minutes before it gives up, so the watchdog waits long
+    command = ["isabelle", "linter", "-l", "unused", "-o", f"threads={args.threads}", "-o", "linter_timeout=600",
                "-o", f"linter_log={tmp / 'questions.tsv'}", "-d", str(tmp / "session"), "Oom_Probe"]
     with log.open("w") as out:
         rc = subprocess.run(command, env=env, stdout=out, stderr=subprocess.STDOUT).returncode
@@ -71,7 +80,7 @@ def report(tmp, log, rc):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--maxheap", default="1500M")
-    parser.add_argument("--lemmas", type=int, default=16)
-    parser.add_argument("--size", type=int, default=20_000_000)
-    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--lemmas", type=int, default=8)
+    parser.add_argument("--size", type=int, default=50_000_000)
+    parser.add_argument("--threads", type=int, default=4)
     report(*run(parser.parse_args()))

@@ -207,7 +207,9 @@ fun times ({elapsed, cpu, gc}: Timing.timing) =
 (*cancelled from outside (overlay removed, or every task cancelled when the heap runs out): say so
   before passing the interrupt on, so that the question is not just unanswered*)
 fun interrupted instance start exn =
-  (output instance "interrupted" (times (Timing.result start)); Exn.reraise exn);
+  (Thread_Attributes.uninterruptible_body (fn _ =>
+    output instance "interrupted" (times (Timing.result start)));
+   Exn.reraise exn);
 
 fun register name check =
   Command.print_function name
@@ -218,7 +220,8 @@ fun register name check =
             val limit = Time.fromMilliseconds (the (Int.fromString timeout_ms));
             val start = Timing.start ();
             val (verdict, props) =
-              (case Exn.result (check limit args) st of
+              (*Exn.result would pass interrupts on before we see them*)
+              (case Exn.capture (check limit args) st of
                 Exn.Res res => res
               | Exn.Exn exn =>
                   if Exn.is_interrupt exn then interrupted instance start exn
