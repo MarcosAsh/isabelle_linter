@@ -36,6 +36,10 @@ isabelle linter -F -d DIR SESSION                               # also apply the
 `-l unused` or `-l faster_step` runs just one lint. By default faster_step only tries steps
 over 1 second (`-o faster_step_slow=SECONDS`).
 
+`-o faster_step_try0=true -o linter_log=FILE` also runs Isabelle's try0 on each step faster_step
+tries and re-times its proof the same way, as a baseline in the question log; it never changes
+the findings.
+
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
 
@@ -89,7 +93,7 @@ isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_
 - `fragility.py CENSUS OLD_THYS NEW_THYS`: which census steps changed between two AFP versions, by
   step time and method.
 - `edit_summary.py LOG.tsv...`: hit rate, time saved, search time and winning edit kinds from
-  faster_step question logs.
+  faster_step question logs; with `faster_step_try0`, the same for try0 and for the better of the two.
 - `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
 - `plot_steps.py`: the step-time figures.
 - `timing_box.py`: quiet the timing machine (root; `--undo`).
