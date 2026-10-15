@@ -118,7 +118,7 @@ def queue():
     retime("winners before", "census/winners_21_retime.tsv", "winners_before")
     retime("winners after", "census/winners_21_retime_patched.tsv", "winners_after", dirs=patched_dirs())
     entries = (REPO / "scripts/faster_entries.txt").read_text().split()
-    options = ["-o", "faster_step_slow=3", "-o", "linter_timeout=300", *THREADS]
+    options = ["-o", "faster_step_slow=3", "-o", "linter_timeout=300", "-o", "faster_step_try0=true", *THREADS]
     stage("faster afp", PIN + ["python3", "scripts/lint_afp.py", "faster_step", *options, *entries],
           REPO / "census/faster_step/afp.out", watch=REPO / "census/faster_step/logs", stall=2 * STALL)
     log("queue done")
