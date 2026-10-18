@@ -65,14 +65,16 @@ fun run_by st text () =
   end;
 
 (*no position: markup would go into the theory; forked proofs must finish too*)
-fun run_text st0 text () =
+fun run_state st0 text () =
   let
     val thy = Toplevel.theory_of st0;
     val st = fold (Toplevel.command_exception false) (Outer_Syntax.parse_text thy (K thy) Position.none text) st0;
   in
     if Toplevel.is_proof st orelse Toplevel.is_skipped_proof st then error "Unfinished proof"
-    else Thm.consolidate_theory (Toplevel.theory_of st)
+    else (Thm.consolidate_theory (Toplevel.theory_of st); st)
   end;
+
+fun run_text st0 text () = ignore (run_state st0 text ());
 
 fun median xs = nth (sort int_ord xs) (length xs div 2);
 

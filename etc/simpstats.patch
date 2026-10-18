@@ -1,0 +1,278 @@
+--- /dev/null
++++ b/src/Pure/rule_statistics.ML
+@@ -0,0 +1,82 @@
++(*  Title:      Pure/rule_statistics.ML
++
++How often the simplifier and the classical reasoner try each rule, for profiling.
++rule_statistics = NAME counts under NAME; "" (the default) counts nothing.
++*)
++
++signature RULE_STATISTICS =
++sig
++  val rule_statistics: string Config.T
++  type counts = {tried: int, matched: int, succeeded: int, time: Time.time}
++  type key = string * Thm_Name.T
++  type counter
++  val counter: Proof.context -> counter option
++  val count: counter -> (key * counts) list -> unit
++  val get: string -> (key * counts) list
++  val reset: string -> unit
++end;
++
++structure Rule_Statistics: RULE_STATISTICS =
++struct
++
++val rule_statistics = Config.declare_string ("rule_statistics", \<^here>) (K "");
++
++type counts = {tried: int, matched: int, succeeded: int, time: Time.time};
++
++(*kind of rule, like "simp", "simproc", "classical" or "blast", and its name*)
++type key = string * Thm_Name.T;
++
++structure Keytab =
++  Table(type key = string * Thm_Name.T val ord = prod_ord fast_string_ord Thm_Name.ord);
++
++type counter = counts Keytab.table Synchronized.var;
++
++
++(* counters by name *)
++
++(*read without the lock: it only changes when a name is first used or reset*)
++val counters = Unsynchronized.ref (Symtab.empty: counter Symtab.table);
++val counters_lock = Thread.Mutex.mutex ();
++
++fun change_counters f =
++  Multithreading.synchronized "Rule_Statistics" counters_lock (fn () =>
++    let val (res, tab) = f (! counters) in counters := tab; res end);
++
++fun new_counter name =
++  change_counters (fn tab =>
++    (case Symtab.lookup tab name of
++      SOME c => (c, tab)
++    | NONE =>
++        let val c = Synchronized.var ("Rule_Statistics " ^ name) Keytab.empty
++        in (c, Symtab.update (name, c) tab) end));
++
++fun the_counter name =
++  (case Symtab.lookup (! counters) name of
++    SOME c => c
++  | NONE => new_counter name);
++
++fun counter ctxt =
++  (case Config.get ctxt rule_statistics of
++    "" => NONE
++  | name => SOME (the_counter name));
++
++fun reset name = change_counters (fn tab => ((), Symtab.delete_safe name tab));
++
++
++(* counts *)
++
++val zero: counts = {tried = 0, matched = 0, succeeded = 0, time = Time.zeroTime};
++
++fun add (a: counts) (b: counts) =
++  {tried = #tried a + #tried b, matched = #matched a + #matched b,
++   succeeded = #succeeded a + #succeeded b, time = #time a + #time b};
++
++(*rules without a name do not count*)
++fun count c entries =
++  Synchronized.change c
++    (fold (fn (key as (_, name), counts) =>
++      if Thm_Name.is_empty name then I else Keytab.map_default (key, zero) (add counts)) entries);
++
++fun get name = Keytab.dest (Synchronized.value (the_counter name));
++
++end;
+--- a/src/Pure/ROOT.ML
++++ b/src/Pure/ROOT.ML
+@@ -199,6 +199,7 @@
+ ML_file "tactical.ML";
+ ML_file "search.ML";
+ ML_file "tactic.ML";
++ML_file "rule_statistics.ML";
+ ML_file "bires.ML";
+ ML_file "raw_simplifier.ML";
+ ML_file "conjunction.ML";
+--- a/src/Pure/bires.ML
++++ b/src/Pure/bires.ML
+@@ -286,6 +286,20 @@
+   in (inet', enet') end;
+ 
+ 
++(*one rule at a time, counting each rule that is tried and whether it resolves*)
++fun counted_biresolution counter ctxt match rules i st =
++  let
++    fun attempt (rule as (_, thm)) =
++      let
++        val pulled =
++          Seq.pull (Thm.biresolution (SOME ctxt) match [rule] i st) handle THM _ => NONE;
++        val name = the_default Thm_Name.empty (try Thm.the_name_hint thm);
++        val matched = if is_some pulled then 1 else 0;
++        val counts = {tried = 1, matched = matched, succeeded = 0, time = Time.zeroTime};
++        val _ = Rule_Statistics.count counter [(("classical", name), counts)];
++      in Seq.make (fn () => pulled) end;
++  in Seq.maps attempt (Seq.of_list rules) end;
++
+ (*biresolution using a pair of nets rather than rules:
+    boolean "match" indicates matching or unification.*)
+ fun biresolution_from_nets_tac ctxt ord pred match ((inet, enet): netpair) =
+@@ -296,7 +310,11 @@
+         val concl = Logic.strip_assums_concl prem;
+         val tagged_rules = Net.unify_term inet concl @ maps (Net.unify_term enet) hyps;
+         val order = make_order_list ord pred;
+-      in PRIMSEQ (Thm.biresolution (SOME ctxt) match (order tagged_rules) i) end);
++      in
++        (case Rule_Statistics.counter ctxt of
++          NONE => PRIMSEQ (Thm.biresolution (SOME ctxt) match (order tagged_rules) i)
++        | SOME counter => counted_biresolution counter ctxt match (order tagged_rules) i)
++      end);
+ 
+ (*versions taking pre-built nets.  No filtering of brls*)
+ fun biresolve_from_nets_tac ctxt = biresolution_from_nets_tac ctxt tag_ord NONE false;
+--- a/src/Pure/raw_simplifier.ML
++++ b/src/Pure/raw_simplifier.ML
+@@ -929,6 +929,19 @@
+ fun trace_simproc args ctxt = #trace_simproc (trace_ops ctxt) args ctxt;
+ 
+ 
++(* statistics *)
++
++fun count_proc NONE _ f = f ()
++  | count_proc (SOME counter) name f =
++      let
++        val start = Time.now ();
++        val res = f ();
++        val time = Time.now () - start;
++        val succeeded = if is_some res then 1 else 0;
++        val counts = {tried = 1, matched = 1, succeeded = succeeded, time = time};
++      in Rule_Statistics.count counter [(("simproc", (name, 0)), counts)]; res end;
++
++
+ 
+ (** rewriting **)
+ 
+@@ -1090,6 +1103,33 @@
+           let val opt = rew rrule handle Pattern.MATCH => NONE
+           in (case opt of NONE => rews rrules | some => some) end;
+ 
++    (*like rews, counting each candidate; the failed attempts of a conditional rule are timed*)
++    fun counted_rews counter rrules =
++      let
++        fun conditional ({thm, ...}: rrule) = not (can Logic.dest_equals (Thm.prop_of thm));
++        fun attempt rrule =
++          let
++            val start = if conditional rrule then SOME (Time.now ()) else NONE;
++            val (opt, matched) = (rew rrule, true) handle Pattern.MATCH => (NONE, false);
++            val time =
++              (case start of
++                SOME t => if matched andalso is_none opt then Time.now () - t else Time.zeroTime
++              | NONE => Time.zeroTime);
++            val counts =
++              {tried = 1, matched = if matched then 1 else 0,
++               succeeded = if is_some opt then 1 else 0, time = time};
++          in (opt, (("simp", #name rrule), counts)) end;
++        fun go entries [] = (NONE, entries)
++          | go entries (rrule :: rest) =
++              (case attempt rrule of
++                (NONE, entry) => go (entry :: entries) rest
++              | (some, entry) => (some, entry :: entries));
++        val (res, entries) = go [] rrules;
++      in Rule_Statistics.count counter entries; res end;
++
++    val counter = Rule_Statistics.counter ctxt;
++    val rule_rews = (case counter of NONE => rews | SOME c => counted_rews c);
++
+     fun sort_rrules rrs =
+       let
+         fun is_simple ({thm, ...}: rrule) =
+@@ -1110,8 +1150,9 @@
+               print_term ctxt ("Trying procedure " ^ quote name ^ " on:") eta_t);
+              (let
+                 val ctxt' = Config.put simp_trace (Config.get ctxt simp_debug) ctxt
+-                val res = trace_simproc {name = name, cterm = eta_t'} ctxt'
+-                  (fn ctxt'' => Morphism.form_context' ctxt'' proc eta_t')
++                val res = count_proc counter name (fn () =>
++                  trace_simproc {name = name, cterm = eta_t'} ctxt'
++                    (fn ctxt'' => Morphism.form_context' ctxt'' proc eta_t'))
+               in case res of
+                 NONE => (cond_tracing' ctxt simp_debug (fn () => "FAILED"); proc_rews ps)
+               | SOME raw_thm =>
+@@ -1130,7 +1171,7 @@
+     (case eta_t of
+       Abs _ $ _ => SOME (Thm.transitive eta_thm (Thm.beta_conversion false eta_t'), skel0)
+     | _ =>
+-      (case rews (sort_rrules (Net.match_term rules eta_t)) of
++      (case rule_rews (sort_rrules (Net.match_term rules eta_t)) of
+         NONE => proc_rews (Net.match_term simprocs eta_t)
+       | some => some))
+   end;
+@@ -1161,6 +1202,7 @@
+   let
+     val thy = Proof_Context.theory_of ctxt;
+     val Simpset (_, {procs = (_, congprocs), ...}) = simpset_of ctxt;
++    val counter = Rule_Statistics.counter ctxt;
+ 
+     val eta_ct = Thm.rhs_of (Thm.eta_conversion ct);
+ 
+@@ -1173,9 +1215,9 @@
+                   print_term ctxt ("Trying procedure " ^ quote name ^ " on:") (Thm.term_of eta_ct));
+ 
+               val ctxt' = Config.put simp_trace (Config.get ctxt simp_debug) ctxt;
+-              val res =
++              val res = count_proc counter name (fn () =>
+                 trace_simproc {name = name, cterm = eta_ct} ctxt'
+-                  (fn ctxt'' => Morphism.form_context' ctxt'' proc eta_ct);
++                  (fn ctxt'' => Morphism.form_context' ctxt'' proc eta_ct));
+             in
+               (case res of
+                 NONE => (cond_tracing' ctxt simp_debug (fn () => "FAILED"); proc_congs ps)
+--- a/src/Pure/Isar/attrib.ML
++++ b/src/Pure/Isar/attrib.ML
+@@ -639,6 +639,7 @@
+   register_config_int Raw_Simplifier.simp_trace_depth_limit #>
+   register_config_bool Raw_Simplifier.simp_debug #>
+   register_config_bool Raw_Simplifier.simp_trace #>
++  register_config_string Rule_Statistics.rule_statistics #>
+   register_config_bool Local_Defs.unfold_abs_def);
+ 
+ 
+--- a/src/Provers/blast.ML
++++ b/src/Provers/blast.ML
+@@ -566,17 +566,28 @@
+   | isVarForm (Const (c, _) $ Var _) = (c = Data.not_name)
+   | isVarForm _ = false;
+ 
++(*for the rule statistics: the net offered these rules*)
++fun count_offered (State {ctxt, ...}) rules =
++  (case Rule_Statistics.counter ctxt of
++    NONE => ()
++  | SOME counter =>
++      Rule_Statistics.count counter (rules |> map (fn (_, (_, thm)) =>
++        (("blast", the_default Thm_Name.empty (try Thm.the_name_hint thm)),
++          {tried = 1, matched = 0, succeeded = 0, time = Time.zeroTime}))));
++
+ fun netMkRules state P vars (nps: Bires.netpair list) =
+   case P of
+       (Const ("*Goal*", _) $ G) =>
+         let val pG = mk_Trueprop (toTerm 2 G)
+             val intrs = maps (fn (inet,_) => Net.unify_term inet pG) nps
++            val _ = count_offered state intrs
+         in  map (fromIntrRule state vars o #2) (Bires.tag_order intrs)  end
+     | _ =>
+         if isVarForm P then [] (*The formula is too flexible, reject*)
+         else
+         let val pP = mk_Trueprop (toTerm 3 P)
+             val elims = maps (fn (_,enet) => Net.unify_term enet pP) nps
++            val _ = count_offered state elims
+         in  map_filter (fromRule state vars o #2) (Bires.tag_order elims)  end;
+ 
+ 
+--- a/etc/settings
++++ b/etc/settings
+@@ -205,3 +205,6 @@
+ 
+ #ISABELLE_SMLNJ="/usr/bin/sml"
+ #ISABELLE_SWIPL="/usr/bin/swipl"
++
++# the simplifier and the classical reasoner count rules under the option rule_statistics
++ISABELLE_RULE_STATISTICS=true

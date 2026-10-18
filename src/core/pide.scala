@@ -170,9 +170,11 @@ object Pide {
     File.append(path, rows.mkString)
   }
 
-  /* the print functions of ml/; Sledgehammer and try0 need HOL */
+  /* the print functions of ml/; Sledgehammer and try0 need HOL, simp statistics a patched Isabelle */
   private def load_queries(session: Headless.Session, hol: Boolean): Unit = {
-    val theories = "Linter_Query" :: (if (hol) List("Linter_Sledgehammer", "Linter_Try0") else Nil)
+    val theories =
+      "Linter_Query" :: (if (hol) List("Linter_Sledgehammer", "Linter_Try0") else Nil) :::
+        (if (Simp_Hygiene.available) List("Linter_Rule_Stats") else Nil)
     val query_dir = Path.explode("$ISABELLE_LINTER_HOME/ml").absolute.implode
     if (!session.use_theories(theories, master_dir = query_dir).ok)
       error("Failed to load " + theories.mkString(", ") + " from ml/")

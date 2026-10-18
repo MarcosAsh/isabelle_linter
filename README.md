@@ -6,6 +6,8 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **faster_step** finds `by` steps that another method proves faster. It tries other methods,
   the step without each of its facts, for `by M1 M2` the fastest method for each subgoal, and
   `simp only:` with the rewrite rules the step's proof used.
+- **simp_hygiene** finds `[simp]` rules, simprocs and classical rules that are tried often for
+  nothing. It needs a patched Isabelle (below) and only reports.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -33,8 +35,8 @@ isabelle linter -d DIR SESSION                                  # your own sessi
 isabelle linter -F -d DIR SESSION                               # also apply the fixes
 ```
 
-`-l unused` or `-l faster_step` runs just one lint. By default faster_step only tries steps
-over 1 second (`-o faster_step_slow=SECONDS`).
+`-l unused` or `-l faster_step` runs just one lint (simp_hygiene runs too where it can). By
+default faster_step only tries steps over 1 second (`-o faster_step_slow=SECONDS`).
 
 `-o faster_step_try0=true -o linter_log=FILE` also runs Isabelle's try0 on each step faster_step
 tries and re-times its proof the same way, as a baseline in the question log; it never changes
@@ -42,6 +44,38 @@ the findings.
 
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
+
+## Simp hygiene
+
+`simp_hygiene` finds rules that the simplifier and the classical reasoner keep trying for
+nothing. Every lemma of the session is run once with the rules counted: how often the
+simplifier's net offers each `[simp]` rule, how often it matches and rewrites, how often a
+conditional rule's condition fails and the time that takes, each simproc's calls, rewrites and
+time, and how often `auto`, `fast`, `force` ... try each classical rule and `blast` is offered
+it. Of what is tried at least 1000 times in the session (`-o simp_hygiene_min`), it reports
+
+- `[simp]` rules that never rewrote, and simprocs that never rewrote;
+- conditional `[simp]` rules whose condition held in at most 10% of its tries;
+- classical rules in the proofs of at most 5% of the lemmas that try them.
+
+```
+Simp_Hygiene.thy:17: [simp_hygiene] [simp] rule `Simp_Hygiene.pair_same` offered 156 times in 6 lemmas, never matched, never rewrote
+```
+
+Stock Isabelle cannot count this: its simplifier trace hooks only see rules that already matched,
+and the classical reasoner has none. The lint needs an Isabelle with `etc/simpstats.patch`, which
+adds a `rule_statistics` option (off by default); a release would need it upstream:
+
+```bash
+cp -a Isabelle2025-2 Isabelle2025-2-simpstats && cd Isabelle2025-2-simpstats
+patch -p1 < ~/dev/isabelle_linter/etc/simpstats.patch
+echo -n Isabelle2025-2-simpstats > etc/ISABELLE_IDENTIFIER    # own heaps, apart from the release's
+bin/isabelle linter -d ~/dev/isabelle_linter/test -o simp_hygiene_min=100 Linter_Simp_Hygiene
+```
+
+Its findings are information only and never part of `-F`: removing `[simp]` or `[intro]`
+changes every later proof, also in other sessions and in commands that are not lemmas, which
+only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands.
 
 ## Collecting data
 
