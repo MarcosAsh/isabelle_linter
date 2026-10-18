@@ -9,6 +9,9 @@ sources = \
   src/core/tool.scala \
   src/lints/faster_step/faster_step.scala \
   src/lints/unused/unused.scala \
+  src/lints/unused_imports/theory_graph.scala \
+  src/lints/unused_imports/patch.scala \
+  src/lints/unused_imports/unused_imports.scala \
   src/collect/collect.scala \
   src/census/census.scala \
   src/retime/retime.scala

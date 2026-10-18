@@ -6,6 +6,8 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **faster_step** finds `by` steps that another method proves faster. It tries other methods,
   the step without each of its facts, for `by M1 M2` the fastest method for each subgoal, and
   `simp only:` with the rewrite rules the step's proof used.
+- **unused_imports** finds theory imports that can go, checked by building an edited copy of the
+  session.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -42,6 +44,27 @@ the findings.
 
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
+
+## Unused imports
+
+`-l unused_imports` finds theory imports that can go, either because another import brings the
+theory in anyway or because nothing in the session needs it.
+
+```bash
+isabelle linter -l unused_imports -d test Linter_Imports
+```
+
+The prover says which theories each theory uses: whose theorems its proofs use, whose constants,
+types, classes and type instances it mentions, and whose names its text refers to. An import is
+proposed if every theory of the session still has those without it. Notation and other implicit
+uses don't show up there, so the proposals are checked by building a copy of the session's
+directory (sessions renamed `*_Imports`), together with the sessions of the same ROOT that build on
+it. Imports that break a theory are put back, and what is reported is a set of removals the copy
+built with. Sessions in other directories that build on the session are listed but not built.
+
+Only imports of theories outside the Isabelle distribution are tried, unless
+`-o unused_imports_distribution`. The report gives each theory's checking time and the session's
+critical path (the longest chain of imports) before and after, from one build each.
 
 ## Collecting data
 

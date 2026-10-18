@@ -5,3 +5,13 @@ session Linter_Example = HOL +
     Unused
     Interp
     Simp_Only
+
+session Linter_Imports in imports = HOL +
+  description "Example theories for unused_imports (isabelle linter -l unused_imports -d test Linter_Imports)."
+  theories
+    Imports_User
+
+session Linter_Imports_Ex in imports_ex = Linter_Imports +
+  description "Builds on Linter_Imports, so unused_imports builds it too."
+  theories
+    Imports_Ex

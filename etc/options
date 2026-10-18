@@ -15,6 +15,15 @@ public option linter_factor : real = 5
 public option unused_runs : int = 3
   -- "unused: the lemma with and without the fix is timed this many times; medians are compared"
 
+public option unused_imports_builds : int = 10
+  -- "unused_imports: builds of the copy after the one with every proposed removal; removals not tried by then stay"
+
+public option unused_imports_distribution : bool = false
+  -- "unused_imports: also try imports of theories from the Isabelle distribution (Main, HOL-Library ...)"
+
+public option unused_imports_dir : string = ""
+  -- "unused_imports: copy the session's directory into this directory and keep it (empty: a temporary one)"
+
 public option faster_step_slow : real = 1.0
   -- "faster_step: only `by` steps that take at least this many seconds are tried"
 
