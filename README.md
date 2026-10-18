@@ -6,6 +6,9 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **faster_step** finds `by` steps that another method proves faster. It tries other methods,
   the step without each of its facts, for `by M1 M2` the fastest method for each subgoal, and
   `simp only:` with the rewrite rules the step's proof used.
+- **diagnostic_commands** finds commands that prove nothing but are checked on every build:
+  `nitpick`, `quickcheck`, `sledgehammer`, `find_theorems`, `thm`, `value`, `export_code` and
+  the rest of kind `diag`, each with the time it took when the session was checked.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -42,6 +45,20 @@ the findings.
 
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
+
+## Diagnostic commands
+
+```bash
+isabelle linter -d test -l diagnostic_commands Linter_Example
+```
+
+A diagnostic command leaves the proof state as it was, so deleting one cannot change a theorem.
+`-F` deletes only proof and counterexample search (`nitpick`, `quickcheck`, `sledgehammer`,
+`try`, `try0`, `solve_direct`, `find_*`, ...), with its `lemma ... oops` if that is all the lemma
+does. `value`, `export_code` and the like may be tests: the advice is to move them to a test
+session, so that sessions importing this one do not wait for them, and `-F` leaves them. A search
+with `expect =` is a test too, as is every search of a tool whose `*_params` set `expect`
+somewhere in the session. `thm`, `term`, `print_*` and other printing commands are reported only.
 
 ## Collecting data
 
