@@ -27,6 +27,16 @@ sealed case class Cmd(command: Command, offset: Int) {
 
   def body: List[Tok] = tokens.drop(1)
   def range: Text.Range = Text.Range(tokens.head.range.start, tokens.last.range.stop)
+
+  /* the end of the whole span, with any formal comment after the last token */
+  def span_stop: Int = offset + command.length
+}
+
+object Cmd {
+  /* the commands of a theory, without white space and comments */
+  def read(node: Document.Node): List[Cmd] =
+    node.command_iterator().filterNot(_._1.is_ignored)
+      .map({ case (c, o) => Cmd(c, o) }).filter(_.tokens.nonEmpty).toList
 }
 
 /* something removable from a lemma */
@@ -174,9 +184,7 @@ object Lemma {
     val node = snapshot.node
     val text = node.source
     val lines = Line.Document(text)
-    val cmds =
-      node.command_iterator().filterNot(_._1.is_ignored)
-        .map({ case (c, o) => Cmd(c, o) }).filter(_.tokens.nonEmpty).toList
+    val cmds = Cmd.read(node)
 
     def checked(c: Cmd): Boolean = {
       val status = state.command_status(snapshot.version, c.command)

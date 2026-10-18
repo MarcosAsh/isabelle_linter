@@ -5,3 +5,4 @@ session Linter_Example = HOL +
     Unused
     Interp
     Simp_Only
+    Diagnostic

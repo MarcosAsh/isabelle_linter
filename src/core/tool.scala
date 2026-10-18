@@ -6,26 +6,38 @@ import isabelle._
 
 
 object Tool {
-  val lints: List[Lint] = List(Unused, Faster_Step)
+  val lints: List[Lint] = List(Unused, Faster_Step, Diagnostic_Commands)
 
-  /* each fix was checked alone: combine edits of disjoint ranges, otherwise one fix per lemma */
-  def lemma_fix(fs: List[Finding]): String = {
-    val edits = fs.flatMap(_.edit)
-    val ranges = edits.map(_._1).sortBy(_.start)
+  /* each fix was checked alone: combine edits of disjoint ranges, otherwise one fix per lemma; an
+    edit may reach past its lemma, like a deletion that takes its line with it */
+  def lemma_fix(fs: List[Finding]): (Text.Range, String) = {
+    val lemma = fs.head.lemma
+    val edits = fs.flatMap(_.edit).distinct.sortBy(_._1.start)
+    val ranges = edits.map(_._1)
     val disjoint = ranges.zip(ranges.drop(1)).forall({ case (a, b) => a.stop <= b.start })
-    if (edits.length == fs.length && disjoint) fs.head.lemma.replace_all(edits) else fs.head.fix.get
+    if (fs.forall(_.edit.isDefined) && disjoint) {
+      val range = Text.Range(ranges.head.start min lemma.start, ranges.last.stop max lemma.stop)
+      range -> replace(lemma.text, range, edits)
+    }
+    else Text.Range(lemma.start, lemma.stop) -> fs.head.fix.get
   }
+
+  /* the text of range with the edits inside it, sorted and disjoint */
+  def replace(text: String, range: Text.Range, edits: List[(Text.Range, String)]): String =
+    edits.reverse.foldLeft(range.substring(text)) { case (t, (r, s)) =>
+      t.substring(0, r.start - range.start) + s + t.substring(r.stop - range.start)
+    }
 
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
     for ((theory, fs) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
       val path = theory.path
       val text = File.read(path)
-      val lemmas = fs.groupBy(_.lemma.start).values.toList.sortBy(_.head.lemma.start).reverse
+      val checked = fs.head.lemma.text
+      val lemmas = fs.groupBy(_.lemma.start).values.toList
       val fixed =
-        lemmas.foldLeft(text) { (t, lfs) =>
-          val l = lfs.head.lemma
-          if (t.substring(l.start, l.stop) != l.source) error("File changed: " + path)
-          t.substring(0, l.start) + lemma_fix(lfs) + t.substring(l.stop)
+        lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (t, (r, s)) =>
+          if (r.substring(t) != r.substring(checked)) error("File changed: " + path)
+          t.substring(0, r.start) + s + t.substring(r.stop)
         }
       File.write(path, fixed)
       progress.echo("Fixed " + lemmas.length + " lemmas (" + fs.length + " findings) in " + path.implode)
