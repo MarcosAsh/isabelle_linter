@@ -11,6 +11,8 @@ A linter for Isabelle that checks every suggestion with the prover before showin
   the rest of kind `diag`, each with the time it took when the session was checked.
 - **simp_hygiene** finds `[simp]` rules, simprocs and classical rules that are tried often for
   nothing. It needs a patched Isabelle (below) and only reports.
+- **unused_imports** finds theory imports that can go, checked by building an edited copy of the
+  session.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -97,6 +99,30 @@ changes every later proof, also in other sessions and in commands that are not l
 only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands. The
 equations of `fun` and `primrec` reach the simpset without a name, so they are counted together
 under their constant.
+
+## Unused imports
+
+`-l unused_imports` finds theory imports that can go, either because another import brings the
+theory in anyway or because nothing in the session needs it.
+
+```bash
+isabelle linter -l unused_imports -d test Linter_Imports
+```
+
+The prover says which theories each theory uses: whose theorems its proofs use, whose constants,
+types, classes and type instances it mentions, and whose names its text refers to. An import is
+proposed if every theory of the session still has those without it. Notation and other implicit
+uses don't show up there, so the proposals are checked by building a copy of the session's
+directory (sessions renamed `*_Imports`), together with the sessions of the same ROOT that build on
+it. Imports that break a theory, or change what it exports (`export_theory`: types, constants,
+theorem statements, instances), are put back, and what is reported is a set of removals the copy
+built with. Sessions in other directories that build on the session are listed but not built.
+`-F` removes the imports, and adds any theory that only those imports kept in the session to the
+ROOT's theories.
+
+Only imports of theories outside the Isabelle distribution are tried, unless
+`-o unused_imports_distribution`. The report gives the time of each theory's commands and the
+session's critical path (the longest chain of imports) before and after, from one build each.
 
 ## Collecting data
 

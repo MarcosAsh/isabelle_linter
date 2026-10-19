@@ -60,7 +60,8 @@ Usage: isabelle linter [OPTIONS] SESSION
   Options are:
     -F           apply the fixes to the theory files
     -d DIR       include session directory
-    -l LINTS     comma-separated lints to run (default: """ + default_lints.map(_.name).mkString(",") + """)
+    -l LINTS     comma-separated lints to run (default: """ + default_lints.map(_.name).mkString(",") + """;
+                 also """ + Unused_Imports.name + """, which builds an edited copy of SESSION)
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
 
   Check SESSION once in a headless PIDE session, then run the lints, which ask
@@ -76,15 +77,19 @@ Usage: isabelle linter [OPTIONS] SESSION
             case List(s) => s
             case _ => getopts.usage()
           }
-        val run = selected.map(n => lints.find(_.name == n).getOrElse(error("Unknown lint " + quote(n))))
+        val (imports, others) = selected.partition(_ == Unused_Imports.name)
+        val run = others.map(n => lints.find(_.name == n).getOrElse(error("Unknown lint " + quote(n))))
 
         val progress = new Console_Progress()
-        val findings = Pide.run(options, session_name, run, dirs = dirs.toList, progress = progress)
-        for (f <- findings.sortBy(f => (f.lemma.theory.node, f.line))) {
-          progress.echo("\n" + f.lemma.theory.path.implode + ":" + f.line + ": [" + f.lint + "] " + f.message)
+        if (run.nonEmpty) {
+          val findings = Pide.run(options, session_name, run, dirs = dirs.toList, progress = progress)
+          for (f <- findings.sortBy(f => (f.lemma.theory.node, f.line))) {
+            progress.echo("\n" + f.lemma.theory.path.implode + ":" + f.line + ": [" + f.lint + "] " + f.message)
+          }
+          progress.echo("\n" + findings.length + " findings")
+          if (fix) apply_fixes(findings, progress)
         }
-        progress.echo("\n" + findings.length + " findings")
-        if (fix) apply_fixes(findings, progress)
+        if (imports.nonEmpty) Unused_Imports.run(options, session_name, dirs.toList, progress, fix)
       })
 }
 

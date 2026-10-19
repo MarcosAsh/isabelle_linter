@@ -18,6 +18,11 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_used_rules M   run `by M`; rules are the simp rules, and the facts named in M, that its
                         proof used, as names that parse in the goal's context; subgoals counts
                         the goals before it
+  linter_imports REF... on a theory's last command: uses are the other theories whose theorems
+                        its facts' proofs use, that declared the constants, types, classes and
+                        type instances its facts and constants mention, or the entities REF
+                        ("kind name", from the text's markup); context is "theory facts simps
+                        consts types classes" for each theory in its context, joined by ";"
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone. A question cancelled while it runs answers "interrupted", with
@@ -198,6 +203,128 @@ fun goal_features state =
   end;
 
 
+(* imports *)
+
+(*the theory that declared name, if the space knows it*)
+fun entry_theory space name = try (Name_Space.theory_name {long = true} space) name;
+
+fun facts_space thy = Facts.space_of (Global_Theory.facts_of thy);
+
+(*the name spaces of the entity kinds that markup refers to; other kinds are ignored*)
+fun kind_space thy kind =
+  AList.lookup (op =)
+    [(Markup.constantN, Sign.const_space), (Markup.type_nameN, Sign.type_space),
+     (Markup.classN, Sign.class_space), (Markup.factN, facts_space),
+     (Markup.localeN, Locale.locale_space), (Markup.bundleN, Bundle.bundle_space o Context.Theory),
+     (Markup.methodN, Method.method_space o Context.Theory),
+     (Markup.attributeN, Attrib.attribute_space o Context.Theory)] kind
+  |> Option.map (fn space => space thy);
+
+fun own thy space name = entry_theory space name = SOME (Context.theory_long_name thy);
+
+fun own_thms thy =
+  Facts.fold_static (fn (a, ths) => own thy (facts_space thy) a ? append ths)
+    (Global_Theory.facts_of thy) [];
+
+(*constants with their types, and abbreviations with what they stand for*)
+fun own_const_terms thy =
+  #constants (Consts.dest (Sign.consts_of thy))
+  |> maps (fn (c, (T, rhs)) => if own thy (Sign.const_space thy) c then Const (c, T) :: the_list rhs else []);
+
+(*the theories of the theorems that derivations use, looking through those of thy itself*)
+fun proof_theories thy thms =
+  let
+    val name = Context.theory_long_name thy;
+    fun walk (i, node) (seen, used) =
+      if Inttab.defined seen i then (seen, used)
+      else
+        let val a = #theory_name (Proofterm.thm_id (i, node)) in
+          if a = name then fold walk (Proofterm.thm_node_thms node) (Inttab.update (i, ()) seen, used)
+          else (Inttab.update (i, ()) seen, Symtab.update (a, ()) used)
+        end;
+    fun deps thm = the_default [] (try Thm.thm_deps thm);
+  in fold (fold walk o deps) thms (Inttab.empty, Symtab.empty) |> #2 |> Symtab.keys end;
+
+fun add_key a = Symtab.update (a, ());
+
+fun term_names ts =
+  (fold (Term.fold_aterms (fn Const (c, _) => add_key c | _ => I)) ts Symtab.empty |> Symtab.keys,
+   fold (Term.fold_types (Term.fold_subtypes (fn Type (a, _) => add_key a | _ => I))) ts Symtab.empty
+   |> Symtab.keys,
+   fold (Term.fold_types (Term.fold_atyps_sorts (fn (_, S) => fold add_key S))) ts Symtab.empty
+   |> Symtab.keys);
+
+(*a type instance counts for each class that a mentioned constant or type variable asks for, except
+  the default sort, which every type has (in HOL)*)
+fun arity_theories thy tycons classes =
+  let val all = subtract (op =) (Sign.defaultS thy) (Sign.complete_sort thy classes) in
+    maps (fn a => maps (fn c => Thm.theory_names_of_arity {long = true} thy (a, c)) all) tycons
+  end;
+
+(*the theories that declared the constants, types and classes of ts, and the instances they need*)
+fun term_theories thy ts =
+  let
+    val (consts, types, sorts) = term_names ts;
+    val schemes = map_filter (try (Consts.the_constraint (Sign.consts_of thy))) consts;
+    val classes = distinct (op =) (sorts @ #3 (term_names (map (fn T => Free ("x", T)) schemes)));
+    fun theories space = map_filter (entry_theory space);
+  in
+    theories (Sign.const_space thy) consts @ theories (Sign.type_space thy) types @
+    theories (Sign.class_space thy) classes @ arity_theories thy types classes
+  end;
+
+fun dest_ref r =
+  (case space_explode " " r of
+    [kind, name] => SOME (kind, name)
+  | _ => NONE);
+
+fun ref_theories thy refs =
+  refs |> map_filter (fn (kind, name) =>
+    Option.mapPartial (fn space => entry_theory space name) (kind_space thy kind));
+
+(*the constants and types the text refers to, as terms, for their instances; a class parameter's
+  class is in its constraint, not its type*)
+fun ref_terms thy refs =
+  refs |> map_filter (fn (kind, name) =>
+    if kind = Markup.constantN then
+      Option.map (fn T => Const (name, T)) (try (Consts.the_constraint (Sign.consts_of thy)) name)
+    else if kind = Markup.type_nameN then SOME (Free ("x", Type (name, [])))
+    else NONE);
+
+fun uses thy texts =
+  let
+    val thms = own_thms thy;
+    val refs = map_filter dest_ref texts;
+    val terms = map Thm.prop_of thms @ own_const_terms thy @ ref_terms thy refs;
+  in
+    proof_theories thy thms @ term_theories thy terms @ ref_theories thy refs
+    |> distinct (op =) |> remove (op =) (Context.theory_long_name thy)
+  end;
+
+(*per theory, how many names of each space are its own; simp rules by the names of their facts*)
+fun context_counts thy =
+  let
+    fun tally i space names =
+      fold (fn a =>
+        (case entry_theory space a of
+          SOME t => Symtab.map_default (t, [0, 0, 0, 0, 0]) (nth_map i (fn n => n + 1))
+        | NONE => I)) names;
+    fun all space = Name_Space.get_names space;
+    val simps = map (#1 o #1) (Raw_Simplifier.dest_simps (simpset_of (Proof_Context.init_global thy)));
+    val counts =
+      Symtab.empty
+      |> tally 0 (facts_space thy) (all (facts_space thy))
+      |> tally 1 (facts_space thy) simps
+      |> tally 2 (Sign.const_space thy) (all (Sign.const_space thy))
+      |> tally 3 (Sign.type_space thy) (all (Sign.type_space thy))
+      |> tally 4 (Sign.class_space thy) (all (Sign.class_space thy));
+  in
+    Symtab.dest counts
+    |> map (fn (t, ns) => space_implode " " (t :: map string_of_int ns))
+    |> space_implode ";"
+  end;
+
+
 fun output instance verdict props =
   Output.result ((Markup.instanceN, instance) :: ("verdict", verdict) :: props) [verdict];
 
@@ -311,5 +438,12 @@ val _ =
     ("closes",
       [("rules", space_implode " " (Timeout.apply_physical limit (used_rules st text) ())),
        ms "subgoals" (nsubgoals (Toplevel.proof_of st))]));
+
+val _ =
+  register "linter_imports" (fn limit => fn refs => fn st =>
+    let
+      val thy = Toplevel.theory_of st;
+      val (used, context) = Timeout.apply_physical limit (fn () => (uses thy refs, context_counts thy)) ();
+    in ("closes", [("uses", space_implode " " used), ("context", context)]) end);
 
 end;

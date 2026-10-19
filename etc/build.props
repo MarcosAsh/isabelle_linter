@@ -11,6 +11,9 @@ sources = \
   src/lints/unused/unused.scala \
   src/lints/diagnostic_commands/diagnostic_commands.scala \
   src/lints/simp_hygiene/simp_hygiene.scala \
+  src/lints/unused_imports/theory_graph.scala \
+  src/lints/unused_imports/patch.scala \
+  src/lints/unused_imports/unused_imports.scala \
   src/collect/collect.scala \
   src/census/census.scala \
   src/retime/retime.scala

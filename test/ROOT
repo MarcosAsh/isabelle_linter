@@ -12,3 +12,13 @@ session Linter_Simp_Hygiene in simp_hygiene = HOL +
     (isabelle linter -d test -o simp_hygiene_min=100 Linter_Simp_Hygiene)."
   theories
     Simp_Hygiene
+
+session Linter_Imports in imports = HOL +
+  description "Example theories for unused_imports (isabelle linter -l unused_imports -d test Linter_Imports)."
+  theories
+    Imports_User
+
+session Linter_Imports_Ex in imports_ex = Linter_Imports +
+  description "Builds on Linter_Imports, so unused_imports builds it too."
+  theories
+    Imports_Ex
