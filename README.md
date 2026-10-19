@@ -91,6 +91,38 @@ taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.ts
 `-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
 functions, which shows where a slow step spends its time.
 
+## Parent sessions
+
+A theory that is not in one of a session's parent heaps is checked again by every session that
+imports it through `sessions`. `isabelle linter_parent` reads which theories each session checked,
+and for how long, from the build logs, and suggests the parent that would hold the most of that
+time in its heap. The new parent keeps every current ancestor and does not import the session, so
+the edit is one line of ROOT.
+
+```bash
+isabelle build -d test -o build_timing_threshold=0 Linter_Parent_Lib Linter_Parent_Client
+isabelle linter_parent -d test -m 0 Linter_Parent_Client
+```
+
+```
+Linter_Parent_Client: parent Linter_Parent_Lib instead of HOL saves 0.2 s of 0.2 s re-checked (0.3 s stored)
+  test/ROOT:15: session Linter_Parent_Client in "parent/client" = Linter_Parent_Lib +
+  now ancestors, may leave `sessions`: Linter_Parent_Lib
+  Linter_Parent_Lib will store a heap
+```
+
+With that edit the client checks nothing of the library again. On the AFP build logs of
+2026-10-01 it finds 33.8k s of the 260k s of AFP command time, about 13%:
+
+```bash
+isabelle linter_parent -d AFP -L LOGDIR -m 100
+```
+
+The heap content of a session is what it and its ancestors checked, so a parent needs a log
+database too. `-L DIR` reads the databases from a directory instead of the heap store, `-O FILE`
+writes every suggestion as TSV, and `-m SECONDS` hides the small ones (default 1 s). Each
+suggestion assumes the other sessions keep their parents.
+
 ## How it works
 
 The session gets checked once in a PIDE session, the same machinery jEdit uses. Each question,

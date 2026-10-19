@@ -85,4 +85,5 @@ Usage: isabelle linter [OPTIONS] SESSION
       })
 }
 
-class Tools extends Isabelle_Scala_Tools(Tool.linter_tool, Collect.collect_tool, Census.census_tool, Retime.retime_tool)
+class Tools extends Isabelle_Scala_Tools(Tool.linter_tool, Collect.collect_tool, Census.census_tool, Retime.retime_tool,
+  Parent.parent_tool)

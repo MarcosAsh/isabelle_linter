@@ -12,6 +12,7 @@ sources = \
   src/lints/diagnostic_commands/diagnostic_commands.scala \
   src/collect/collect.scala \
   src/census/census.scala \
-  src/retime/retime.scala
+  src/retime/retime.scala \
+  src/parent/parent.scala
 services = \
   isabelle.isabelle_linter.Tools
