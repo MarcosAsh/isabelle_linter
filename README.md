@@ -59,12 +59,15 @@ types, classes and type instances it mentions, and whose names its text refers t
 proposed if every theory of the session still has those without it. Notation and other implicit
 uses don't show up there, so the proposals are checked by building a copy of the session's
 directory (sessions renamed `*_Imports`), together with the sessions of the same ROOT that build on
-it. Imports that break a theory are put back, and what is reported is a set of removals the copy
+it. Imports that break a theory, or change what it exports (`export_theory`: types, constants,
+theorem statements, instances), are put back, and what is reported is a set of removals the copy
 built with. Sessions in other directories that build on the session are listed but not built.
+`-F` removes the imports, and adds any theory that only those imports kept in the session to the
+ROOT's theories.
 
 Only imports of theories outside the Isabelle distribution are tried, unless
-`-o unused_imports_distribution`. The report gives each theory's checking time and the session's
-critical path (the longest chain of imports) before and after, from one build each.
+`-o unused_imports_distribution`. The report gives the time of each theory's commands and the
+session's critical path (the longest chain of imports) before and after, from one build each.
 
 ## Collecting data
 
