@@ -77,9 +77,9 @@ bin/isabelle linter -d ~/dev/isabelle_linter/test -o simp_hygiene_min=100 Linter
 
 Its findings are information only and never part of `-F`: removing `[simp]` or `[intro]`
 changes every later proof, also in other sessions and in commands that are not lemmas, which
-only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands, and
-only rules with a name: the equations of `fun` and `primrec` reach the simpset without one and
-are left out.
+only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands. The
+equations of `fun` and `primrec` reach the simpset without a name, so they are counted together
+under their constant.
 
 ## Collecting data
 
