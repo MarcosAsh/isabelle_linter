@@ -6,7 +6,10 @@ import isabelle._
 
 
 object Tool {
-  val lints: List[Lint] = List(Unused, Faster_Step, Diagnostic_Commands)
+  val lints: List[Lint] = List(Unused, Faster_Step, Diagnostic_Commands, Simp_Hygiene)
+
+  /* simp_hygiene only where the Isabelle counts simp rules */
+  val default_lints: List[Lint] = lints.filter(l => l != Simp_Hygiene || Simp_Hygiene.available)
 
   /* each fix was checked alone: combine edits of disjoint ranges, otherwise one fix per lemma; an
     edit may reach past its lemma, like a deletion that takes its line with it */
@@ -48,7 +51,7 @@ object Tool {
       { args =>
         val dirs = new scala.collection.mutable.ListBuffer[Path]
         var fix = false
-        var selected = lints.map(_.name)
+        var selected = default_lints.map(_.name)
         var options = Options.init()
 
         val getopts = Getopts("""
@@ -57,7 +60,7 @@ Usage: isabelle linter [OPTIONS] SESSION
   Options are:
     -F           apply the fixes to the theory files
     -d DIR       include session directory
-    -l LINTS     comma-separated lints to run (default: """ + lints.map(_.name).mkString(",") + """)
+    -l LINTS     comma-separated lints to run (default: """ + default_lints.map(_.name).mkString(",") + """)
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
 
   Check SESSION once in a headless PIDE session, then run the lints, which ask

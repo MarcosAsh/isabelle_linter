@@ -6,3 +6,9 @@ session Linter_Example = HOL +
     Interp
     Simp_Only
     Diagnostic
+
+session Linter_Simp_Hygiene in simp_hygiene = HOL +
+  description "simp_hygiene example, needs etc/simpstats.patch
+    (isabelle linter -d test -o simp_hygiene_min=100 Linter_Simp_Hygiene)."
+  theories
+    Simp_Hygiene

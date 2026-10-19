@@ -9,6 +9,8 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **diagnostic_commands** finds commands that prove nothing but are checked on every build:
   `nitpick`, `quickcheck`, `sledgehammer`, `find_theorems`, `thm`, `value`, `export_code` and
   the rest of kind `diag`, each with the time it took when the session was checked.
+- **simp_hygiene** finds `[simp]` rules, simprocs and classical rules that are tried often for
+  nothing. It needs a patched Isabelle (below) and only reports.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -36,8 +38,8 @@ isabelle linter -d DIR SESSION                                  # your own sessi
 isabelle linter -F -d DIR SESSION                               # also apply the fixes
 ```
 
-`-l unused` or `-l faster_step` runs just one lint. By default faster_step only tries steps
-over 1 second (`-o faster_step_slow=SECONDS`).
+`-l unused` or `-l faster_step` runs just one lint (simp_hygiene runs too where it can). By
+default faster_step only tries steps over 1 second (`-o faster_step_slow=SECONDS`).
 
 `-o faster_step_try0=true -o linter_log=FILE` also runs Isabelle's try0 on each step faster_step
 tries and re-times its proof the same way, as a baseline in the question log; it never changes
@@ -59,6 +61,42 @@ does. `value`, `export_code` and the like may be tests: the advice is to move th
 session, so that sessions importing this one do not wait for them, and `-F` leaves them. A search
 with `expect =` is a test too, as is every search of a tool whose `*_params` set `expect`
 somewhere in the session. `thm`, `term`, `print_*` and other printing commands are reported only.
+
+## Simp hygiene
+
+`simp_hygiene` finds rules that the simplifier and the classical reasoner keep trying for
+nothing. Every lemma of the session is run once with the rules counted: how often the
+simplifier's net offers each `[simp]` rule, how often it matches and rewrites, how often a
+conditional rule's condition fails and the time that takes, each simproc's calls, rewrites and
+time, and how often `auto`, `fast`, `force` ... try each classical rule and `blast` is offered
+it. Of what is tried at least 1000 times in the session (`-o simp_hygiene_min`), it reports
+
+- `[simp]` rules that never rewrote, and simprocs that never rewrote;
+- conditional `[simp]` rules whose condition held in at most 10% of its tries;
+- classical rules in the proofs of at most 5% of the lemmas that try them.
+
+```
+Simp_Hygiene.thy:23: [simp_hygiene] [simp] rule `Simp_Hygiene.pair_same` offered 445 times in 9 lemmas, never matched, never rewrote
+  declared here: drop [simp], or `declare Simp_Hygiene.pair_same [simp del]` where it is not needed
+  information only, nothing was re-run without it; counted over 25 of 25 lemmas
+```
+
+Stock Isabelle cannot count this: its simplifier trace hooks only see rules that already matched,
+and the classical reasoner has none. The lint needs an Isabelle with `etc/simpstats.patch`, which
+adds a `rule_statistics` option (off by default); a release would need it upstream:
+
+```bash
+cp -a Isabelle2025-2 Isabelle2025-2-simpstats && cd Isabelle2025-2-simpstats
+patch -p1 < ~/dev/isabelle_linter/etc/simpstats.patch
+echo -n Isabelle2025-2-simpstats > etc/ISABELLE_IDENTIFIER    # own heaps, apart from the release's
+bin/isabelle linter -d ~/dev/isabelle_linter/test -o simp_hygiene_min=100 Linter_Simp_Hygiene
+```
+
+Its findings are information only and never part of `-F`: removing `[simp]` or `[intro]`
+changes every later proof, also in other sessions and in commands that are not lemmas, which
+only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands. The
+equations of `fun` and `primrec` reach the simpset without a name, so they are counted together
+under their constant.
 
 ## Collecting data
 
