@@ -131,11 +131,19 @@
  fun biresolve_from_nets_tac ctxt = biresolution_from_nets_tac ctxt tag_ord NONE false;
 --- a/src/Pure/raw_simplifier.ML
 +++ b/src/Pure/raw_simplifier.ML
-@@ -929,6 +929,19 @@
+@@ -929,6 +929,27 @@
  fun trace_simproc args ctxt = #trace_simproc (trace_ops ctxt) args ctxt;
  
  
 +(* statistics *)
++
++(*a rule without a name, like an equation of fun, counts under "??." and its head constant*)
++fun statistics_name ({name, elhs, ...}: rrule) =
++  if not (String.isPrefix "??." (#1 name)) then name
++  else
++    (case Term.head_of (Thm.term_of elhs) of
++      Const (c, _) => ("??." ^ c, 0)
++    | _ => name);
 +
 +fun count_proc NONE _ f = f ()
 +  | count_proc (SOME counter) name f =
@@ -151,7 +159,7 @@
  
  (** rewriting **)
  
-@@ -1090,6 +1103,33 @@
+@@ -1090,6 +1111,33 @@
            let val opt = rew rrule handle Pattern.MATCH => NONE
            in (case opt of NONE => rews rrules | some => some) end;
  
@@ -170,7 +178,7 @@
 +            val counts =
 +              {tried = 1, matched = if matched then 1 else 0,
 +               succeeded = if is_some opt then 1 else 0, time = time};
-+          in (opt, (("simp", #name rrule), counts)) end;
++          in (opt, (("simp", statistics_name rrule), counts)) end;
 +        fun go entries [] = (NONE, entries)
 +          | go entries (rrule :: rest) =
 +              (case attempt rrule of
@@ -185,7 +193,7 @@
      fun sort_rrules rrs =
        let
          fun is_simple ({thm, ...}: rrule) =
-@@ -1110,8 +1150,9 @@
+@@ -1110,8 +1158,9 @@
                print_term ctxt ("Trying procedure " ^ quote name ^ " on:") eta_t);
               (let
                  val ctxt' = Config.put simp_trace (Config.get ctxt simp_debug) ctxt
@@ -197,7 +205,7 @@
                in case res of
                  NONE => (cond_tracing' ctxt simp_debug (fn () => "FAILED"); proc_rews ps)
                | SOME raw_thm =>
-@@ -1130,7 +1171,7 @@
+@@ -1130,7 +1179,7 @@
      (case eta_t of
        Abs _ $ _ => SOME (Thm.transitive eta_thm (Thm.beta_conversion false eta_t'), skel0)
      | _ =>
@@ -206,7 +214,7 @@
          NONE => proc_rews (Net.match_term simprocs eta_t)
        | some => some))
    end;
-@@ -1161,6 +1202,7 @@
+@@ -1161,6 +1210,7 @@
    let
      val thy = Proof_Context.theory_of ctxt;
      val Simpset (_, {procs = (_, congprocs), ...}) = simpset_of ctxt;
@@ -214,7 +222,7 @@
  
      val eta_ct = Thm.rhs_of (Thm.eta_conversion ct);
  
-@@ -1173,9 +1215,9 @@
+@@ -1173,9 +1223,9 @@
                    print_term ctxt ("Trying procedure " ^ quote name ^ " on:") (Thm.term_of eta_ct));
  
                val ctxt' = Config.put simp_trace (Config.get ctxt simp_debug) ctxt;

@@ -59,7 +59,9 @@ it. Of what is tried at least 1000 times in the session (`-o simp_hygiene_min`),
 - classical rules in the proofs of at most 5% of the lemmas that try them.
 
 ```
-Simp_Hygiene.thy:17: [simp_hygiene] [simp] rule `Simp_Hygiene.pair_same` offered 156 times in 6 lemmas, never matched, never rewrote
+Simp_Hygiene.thy:23: [simp_hygiene] [simp] rule `Simp_Hygiene.pair_same` offered 445 times in 9 lemmas, never matched, never rewrote
+  declared here: drop [simp], or `declare Simp_Hygiene.pair_same [simp del]` where it is not needed
+  information only, nothing was re-run without it; counted over 25 of 25 lemmas
 ```
 
 Stock Isabelle cannot count this: its simplifier trace hooks only see rules that already matched,
@@ -75,7 +77,9 @@ bin/isabelle linter -d ~/dev/isabelle_linter/test -o simp_hygiene_min=100 Linter
 
 Its findings are information only and never part of `-F`: removing `[simp]` or `[intro]`
 changes every later proof, also in other sessions and in commands that are not lemmas, which
-only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands.
+only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands, and
+only rules with a name: the equations of `fun` and `primrec` reach the simpset without one and
+are left out.
 
 ## Collecting data
 

@@ -50,16 +50,25 @@ fun run st0 text () =
 
 fun kind k (((k', _), _): Rule_Statistics.key * Rule_Statistics.counts) = k = k';
 
-(*a rule without a name hint, like the equations of fun, is "??.unknown"*)
+(*a rule without a name, like an equation of fun, counts as "??." and its head constant, or
+  as "??.unknown" if it has none*)
 fun named (((_, (name, _)), _): Rule_Statistics.key * Rule_Statistics.counts) =
-  not (String.isPrefix "??." name);
+  name <> "??.unknown";
+
+fun statistics_name (name, thm) =
+  if not (String.isPrefix "??." (#1 name)) then name
+  else
+    (case try (Term.head_of o #1 o Logic.dest_equals o Logic.strip_imp_concl o Thm.prop_of) thm of
+      SOME (Const (c, _)) => ("??." ^ c, 0)
+    | _ => name);
 
 (*each [simp] rule, and whether it is conditional; a fact can give several rules*)
 fun simp_rules st =
   let
     val simps = Raw_Simplifier.dest_simps (simpset_of (Toplevel.context_of st));
     fun conditional thm c = c orelse Thm.nprems_of thm > 0;
-    fun add (name, thm) = Thm_Name.Table.map_default (name, false) (conditional thm);
+    fun add (name, thm) =
+      Thm_Name.Table.map_default (statistics_name (name, thm), false) (conditional thm);
   in fold add simps Thm_Name.Table.empty end;
 
 fun rule_line simps ((_, name), {tried, matched, succeeded, time}) =

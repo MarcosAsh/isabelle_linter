@@ -8,8 +8,8 @@ text \<open>Each declaration says in a comment what simp_hygiene should find wit
   split_eta_SetCompr2 and unit_abs_eta_conv, whose left-hand sides the net treats as variables,
   so that they are offered for every term (about 12000 times) and never match; the simprocs
   Record.update and Record.select_update (called on every term), Record.eq and HOL.neq (on every
-  equation); and the classical rule Set.psubsetI, tried on the goals `good (f a)` below and never
-  unified. Unused and faster_step find nothing.\<close>
+  equation); and the classical rule Set.psubsetI, which fast and blast try in the last lemmas
+  and which never unifies. Unused and faster_step find nothing.\<close>
 
 definition pair :: "'a \<Rightarrow> 'a \<Rightarrow> 'a" where "pair x y = x"
 

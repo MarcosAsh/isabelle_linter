@@ -120,7 +120,19 @@ object Simp_Hygiene extends Lint {
   }
 
   def own(lemmas: List[Lemma], rule: String): Boolean =
-    lemmas.exists(l => rule.startsWith(theory_base(l) + "."))
+    lemmas.exists(l => unnamed(rule).getOrElse(rule).startsWith(theory_base(l) + "."))
+
+  /* rules without a name, like the equations of fun, count under "??." and their head constant */
+  def unnamed(rule: String): Option[String] = if (rule.startsWith("??.")) Some(rule.drop(3)) else None
+
+  def simp_rule(rule: String): String =
+    unnamed(rule) match {
+      case Some(c) => "unnamed [simp] rules for `" + c + "` (like its fun equations)"
+      case None => "[simp] rule `" + rule + "`"
+    }
+
+  /* what to write in `declare FACT [simp del]` */
+  def simp_fact(rule: String): String = unnamed(rule).map(_ + ".simps").getOrElse(rule)
 
   /* the declaring lemma, else the lemma with the most of it */
   private def place(lemmas: List[Lemma], rule: String, attributes: Set[String], users: List[Stats],
@@ -156,11 +168,12 @@ object Simp_Hygiene extends Lint {
         if (total.matches == 0) "never matched"
         else if (total.conditional) "condition tried " + total.matches + " times (" + ms(total.fail_us) + ")"
         else "matched " + total.matches + " times"
+      val fact = simp_fact(rule)
       val advice =
-        if (origin == "declared here") "drop [simp], or `declare " + rule + " [simp del]` where it is not needed"
-        else "`declare " + rule + " [simp del]` in this session, or `simp del: " + rule + "` in its steps"
+        if (origin == "declared here") "drop [simp], or `declare " + fact + " [simp del]` where it is not needed"
+        else "`declare " + fact + " [simp del]` in this session, or `simp del: " + fact + "` in its steps"
       val message =
-        "[simp] rule `" + rule + "` offered " + total.candidates + " times in " + users.length +
+        simp_rule(rule) + " offered " + total.candidates + " times in " + users.length +
           " lemmas, " + matched + ", never rewrote\n  " + origin + ": " + advice + "\n  " + note
       Finding(name, at, at.line, message)
     }
@@ -194,9 +207,9 @@ object Simp_Hygiene extends Lint {
       val users = measured.filter(_.rules.get(rule).exists(_.failed > 0))
       val (at, origin) = place(lemmas, rule, simp_attributes, users, _.rules(rule).fail_us)
       val message =
-        "conditional [simp] rule `" + rule + "`: condition tried " + total.matches + " times in " +
+        "conditional " + simp_rule(rule) + ": condition tried " + total.matches + " times in " +
           users.length + " lemmas and held " + total.rewrites + " of them; " + ms(total.fail_us) +
-          " in the failed tries\n  " + origin + ": a cheaper premise, or `simp del: " + rule +
+          " in the failed tries\n  " + origin + ": a cheaper premise, or `simp del: " + simp_fact(rule) +
           "` where it fails\n  " + note
       Finding(name, at, at.line, message)
     }
