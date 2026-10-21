@@ -6,8 +6,8 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians, as are
                         cpu, cpu2 and gc, gc2
   linter_run  TEXT      run an edited copy of the lemma from the state before it
-  linter_runs N A B     run lemma texts A and B N times each, in turn; ms, ms2 are the medians,
-                        as are cpu, cpu2
+  linter_runs N A B     run lemma texts A and B N times each, in turn, B first every other
+                        time; ms, ms2 are the medians, as are cpu, cpu2
   linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
                         cpu0, gc0 ... the medians of their cpu and gc, runs0 ... every run's ms
   linter_goal           describe the goal, for learning which methods close it
@@ -24,6 +24,10 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         ("kind name", from the text's markup); context is "theory facts simps
                         consts types classes" for each theory in its context, joined by ";"
   linter_names A B...   run texts A, B1 ... from the state; per Bi: oki, msi, missingi, differi, reorderedi
+  linter_used_members M F...  run `by M`; used0, used1 ... are the names of the theorems of
+                        each fact F that its proof used, all0, all1 ... the names of all of
+                        them; "-" for none, "*" when a theorem has no global name
+  linter_try_del M F... run `by M` with the theorems of the facts F deleted from the simpset
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone. A question cancelled while it runs answers "interrupted", with
@@ -60,15 +64,14 @@ fun parse_methods thy text =
   end;
 
 (*a toplevel goal is at the bottom of the proof stack*)
-fun run_by st text () =
-  let
-    val pre = Toplevel.proof_of st;
-    val methods = parse_methods (Proof.theory_of pre) text;
-  in
+fun run_on pre text () =
+  let val methods = parse_methods (Proof.theory_of pre) text in
     if can (Proof.assert_bottom true) pre
     then ignore (Proof.global_terminal_proof methods pre)
     else ignore (Proof.local_terminal_proof methods pre)
   end;
+
+fun run_by st = run_on (Toplevel.proof_of st);
 
 (*no position: markup would go into the theory; forked proofs must finish too*)
 fun run_state st0 text () =
@@ -194,6 +197,85 @@ fun changed st0 st_a st_b =
     val found = maps table (fact_tables st0 ~~ fact_tables st_a ~~ fact_tables st_b);
     fun names kind = distinct (op =) (map #2 (filter (fn (k, _) => k = kind) found));
   in (names "differ", names "reordered") end;
+
+
+(* theorems of a fact, for simp_scope *)
+
+fun eval_fact ctxt text =
+  let
+    val keywords = Thy_Header.get_keywords (Proof_Context.theory_of ctxt);
+    val toks = Token.explode keywords Position.none text |> filter Token.is_proper;
+  in
+    (case Scan.read Token.stopper Parse.thms1 toks of
+      SOME srcs => Attrib.eval_thms ctxt srcs
+    | NONE => error ("Cannot parse fact " ^ quote text))
+  end;
+
+fun denotes ctxt thm (name, i) =
+  (case extern_fact ctxt name of
+    SOME xname =>
+      let
+        val ths = Proof_Context.get_fact ctxt (Facts.named xname) handle ERROR _ => [];
+        val k = if i = 0 then 1 else i;
+      in
+        if (i > 0 orelse length ths = 1) andalso k <= length ths andalso Thm.eq_thm_prop (nth ths (k - 1), thm)
+        then SOME (xname ^ Thm_Name.print_suffix (name, i)) else NONE
+      end
+  | NONE => NONE);
+
+(*`lemmas defs = a_def b_def` renames its theorems: defs(2), a_def*)
+fun names_below thy thm =
+  let
+    fun down 0 _ = []
+      | down n th =
+          (case try (Thm_Deps.thm_deps thy) [th] of
+            SOME [(_, name)] =>
+              (case try (Global_Theory.get_thm_name thy) (name, Position.none) of
+                SOME th' => if Thm.eq_thm_prop (th, th') then name :: down (n - 1) th' else []
+              | NONE => [])
+          | _ => []);
+  in down 5 thm end;
+
+(*global identity and most specific name; a note only gives a hint like local.simps(1)*)
+fun global_name ctxt thm =
+  let val thy = Proof_Context.theory_of ctxt in
+    (case Global_Theory.lookup_thm thy thm of
+      SOME (id, (name, _)) =>
+        (case get_first (denotes ctxt thm) (rev (names_below thy thm) @ [name, Thm.get_name_hint thm]) of
+          SOME xname => SOME (id, xname)
+        | NONE => NONE)
+    | NONE => NONE)
+  end;
+
+fun print_names [] = "-"
+  | print_names names = space_implode " " (distinct (op =) names);
+
+fun used_of ctxt deps text =
+  let
+    val members = map (global_name ctxt) (eval_fact ctxt text);
+    val named = map_filter I members;
+    val used = filter (fn (id, _) => member (op =) deps id) named;
+  in
+    if exists is_none members then ("*", "*")
+    else (print_names (map #2 used), print_names (map #2 named))
+  end;
+
+fun used_members st text facts () =
+  let
+    val state = Toplevel.proof_of st;
+    val ctxt = Proof.context_of state;
+    val thy = Proof_Context.theory_of ctxt;
+    val goal = finish_by (parse_methods thy text) state;
+    val _ = Thm.no_prems goal orelse error "Unfinished proof";
+    val deps = map #1 (Thm_Deps.thm_deps thy [Thm.close_derivation Position.none goal]);
+  in map (used_of ctxt deps) facts end;
+
+fun without_simps facts st =
+  Toplevel.proof_of st |> Proof.map_context (fn ctxt =>
+    ctxt
+    |> Context_Position.set_visible false
+    |> Simplifier.del_simps (maps (eval_fact ctxt) facts)
+    |> Context_Position.restore_visible ctxt);
 
 
 (* goal features *)
@@ -428,7 +510,10 @@ val _ =
   register "linter_runs" (fn limit => fn [n, a, b] => fn st =>
     let
       fun run text = timed limit (run_text st text) |> apfst verdict;
-      val runs = map (fn _ => (run a, run b)) (1 upto the (Int.fromString n));
+
+      (*the second of a pair runs faster, so alternate*)
+      fun pair i = if i mod 2 = 1 then (run a, run b) else swap (run b, run a);
+      val runs = map pair (1 upto the (Int.fromString n));
       val ok = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
 
       fun med name f = ms name (median (map (Time.toMilliseconds o f) runs));
@@ -516,5 +601,18 @@ val _ =
       val thy = Toplevel.theory_of st;
       val (used, context) = Timeout.apply_physical limit (fn () => (uses thy refs, context_counts thy)) ();
     in ("closes", [("uses", space_implode " " used), ("context", context)]) end);
+
+val _ =
+  register "linter_used_members" (fn limit => fn text :: facts => fn st =>
+    let
+      val (res, t) = timed limit (used_members st text facts);
+      fun used us =
+        maps (fn (i, (u, a)) => [("used" ^ string_of_int i, u), ("all" ^ string_of_int i, a)]) (map_index I us);
+    in (verdict res, times t @ (case res of Exn.Res us => used us | Exn.Exn _ => [])) end);
+
+val _ =
+  register "linter_try_del" (fn limit => fn text :: facts => fn st =>
+    let val (res, t) = timed limit (run_on (without_simps facts st) text)
+    in (verdict res, times t) end);
 
 end;

@@ -7,7 +7,7 @@ import isabelle._
 
 object Tool {
   val lints: List[Lint] =
-    List(Unused, Faster_Step, Diagnostic_Commands, Simp_Hygiene, Datatype_Plugins, Fun_To_Primrec)
+    List(Unused, Faster_Step, Diagnostic_Commands, Simp_Hygiene, Datatype_Plugins, Fun_To_Primrec, Simp_Scope)
 
   /* simp_hygiene only where the Isabelle counts simp rules */
   val default_lints: List[Lint] = lints.filter(l => l != Simp_Hygiene || Simp_Hygiene.available)

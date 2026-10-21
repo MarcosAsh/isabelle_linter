@@ -42,6 +42,21 @@ public option faster_step_try0_timeout : real = 0
 public option simp_hygiene_min : int = 1000
   -- "simp_hygiene: a rule or simproc is reported once it is tried at least this often in the session"
 
+public option simp_scope_slow : real = 1.0
+  -- "simp_scope: only lemmas that take at least this many seconds are tried"
+
+public option simp_scope_speedup : real = 1.2
+  -- "simp_scope: the fixed lemma must be this many times faster (timing noise reaches 15%)"
+
+public option simp_scope_runs : int = 3
+  -- "simp_scope: runs per timing; medians are compared"
+
+public option simp_scope_greedy : int = 12
+  -- "simp_scope: drop rules one at a time if a step used at most this many"
+
+public option simp_scope_theory : bool = false
+  -- "simp_scope: also report theory [simp] declarations that at most half of later lemmas need"
+
 public option definition_runs : int = 3
   -- "datatype_plugins, fun_to_primrec: the definition with and without the fix is timed this many times; medians are compared"
 

@@ -18,6 +18,9 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **fun_to_primrec** finds `fun` definitions that `primrec` can make, without proving the patterns
   and termination, if nothing later uses the facts only `fun` makes (`f.induct`, `f.elims` ...).
   It also reports a slow `fun` that stays (`-o fun_slow=SECONDS`, default 5).
+- **simp_scope** finds simp rules set above the steps that don't need them: a `note
+  simps[simp] = ...` in a proof loses its `[simp]`, and each step gets only the theorems it
+  needs as `simp add:`. A step's own `simp add:` bundle, like `c_defs`, is cut down the same way.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -45,8 +48,8 @@ isabelle linter -d DIR SESSION                                  # your own sessi
 isabelle linter -F -d DIR SESSION                               # also apply the fixes
 ```
 
-`-l unused` or `-l faster_step` runs just one lint (simp_hygiene runs too where it can). By
-default faster_step only tries steps over 1 second (`-o faster_step_slow=SECONDS`).
+`-l unused`, `-l faster_step` or `-l simp_scope` runs just one lint. By default faster_step only
+tries steps over 1 second (`-o faster_step_slow=SECONDS`).
 
 `-o faster_step_try0=true -o linter_log=FILE` also runs Isabelle's try0 on each step faster_step
 tries and re-times its proof the same way, as a baseline in the question log; it never changes
@@ -140,6 +143,20 @@ session and every session built on it, on a copy:
 ```bash
 isabelle linter -l datatype_plugins,fun_to_primrec -o fun_slow=0.3 -d test Linter_Example
 ```
+
+## Simp scope
+
+```bash
+isabelle linter -l simp_scope -d test Linter_Example
+```
+
+simp_scope only tries lemmas that take a second (`-o simp_scope_slow=SECONDS`). It asks each step
+which theorems of the notes' facts and of its own simp facts its proof used, drops them one at a
+time while the step still closes alone, then re-runs the whole lemma with the narrower rules. The
+fix is kept only if the lemma gets faster (medians of 3 runs alone, `-o simp_scope_speedup=1.2`).
+`declare` and `lemmas` outside proofs are left alone, as other theories see them too;
+`-o simp_scope_theory=true` reports those that at most half of the later lemmas in their theory
+need.
 
 ## Collecting data
 
