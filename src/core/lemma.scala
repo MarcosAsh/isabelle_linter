@@ -47,8 +47,9 @@ sealed case class Step(goal: Cmd, cmd: Cmd, methods: String, facts: List[String]
   split: Option[(String, String)] = None)
 
 
+/* a lemma, or a single command like `datatype` for the definition lints */
 sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Document,
-    before: Cmd, cmds: List[Cmd], ok: Boolean) {
+    before: Cmd, cmds: List[Cmd], ok: Boolean, downstream: Downstream = Downstream.none) {
 
   /* text */
 
@@ -56,6 +57,9 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
   def stop: Int = cmds.last.range.stop
   def source: String = text.substring(start, stop)
   def key: String = theory.theory + ":" + start
+
+  /* text that may use what it defines */
+  def later: List[String] = downstream.theory.substring(stop) :: downstream.texts
 
   def line(offset: Int): Int = lines.position(offset).line1
   def line: Int = line(start)
@@ -179,26 +183,34 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
 
 
 object Lemma {
+  private def checked(state: Document.State, snapshot: Document.Snapshot)(c: Cmd): Boolean = {
+    val status = state.command_status(snapshot.version, c.command)
+    !status.is_failed && status.is_finished && c.name != "sorry" && c.name != "oops"
+  }
+
   /* ok: every command checked, and no `sorry` or `oops` */
   def read(state: Document.State, snapshot: Document.Snapshot): List[Lemma] = {
-    val node = snapshot.node
-    val text = node.source
+    val text = snapshot.node.source
     val lines = Line.Document(text)
-    val cmds = Cmd.read(node)
-
-    def checked(c: Cmd): Boolean = {
-      val status = state.command_status(snapshot.version, c.command)
-      !status.is_failed && status.is_finished && c.name != "sorry" && c.name != "oops"
-    }
-
+    val cmds = Cmd.read(snapshot.node)
     for {
       (cmd, i) <- cmds.zipWithIndex
       if theorem_commands(cmd.name) && i > 0
       end <- goal_end(cmds, i)
     } yield {
       val lemma = cmds.slice(i, end + 1)
-      Lemma(snapshot.node_name, text, lines, cmds(i - 1), lemma, lemma.forall(checked))
+      Lemma(snapshot.node_name, text, lines, cmds(i - 1), lemma, lemma.forall(checked(state, snapshot)))
     }
+  }
+
+  val definition_commands: Set[String] = Set("datatype", "codatatype", "fun")
+
+  def definitions(state: Document.State, snapshot: Document.Snapshot, downstream: Downstream): List[Lemma] = {
+    val text = snapshot.node.source
+    val lines = Line.Document(text)
+    val cmds = Cmd.read(snapshot.node)
+    for ((cmd, i) <- cmds.zipWithIndex if definition_commands(cmd.name) && i > 0)
+      yield Lemma(snapshot.node_name, text, lines, cmds(i - 1), List(cmd), checked(state, snapshot)(cmd), downstream)
   }
 
   /* goals whose result is stored as a theorem, so that Thm.consolidate_theory waits for their

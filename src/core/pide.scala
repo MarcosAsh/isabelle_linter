@@ -26,10 +26,9 @@ object Pide {
   val unanswered: Answer = Answer("unanswered")
 
 
-  /* a checked session with the queries loaded; dir is the session's directory; snapshots: its
-    theories as checked */
-  sealed case class Checked(session: Headless.Session, lemmas: List[Lemma], hol: Boolean, dir: Path,
-    snapshots: List[Document.Snapshot])
+  /* checked session, queries loaded; definitions: datatype, fun ...; snapshots: own theories */
+  sealed case class Checked(session: Headless.Session, lemmas: List[Lemma], definitions: List[Lemma],
+    hol: Boolean, dir: Path, snapshots: List[Document.Snapshot])
 
   /* check the session once, read its lemmas, run body, stop the session; imported: also the
     lemmas of imported theories that no heap holds */
@@ -57,12 +56,17 @@ object Pide {
       val state = session.get_state()
 
       /* imported theories outside a heap are loaded too; lint only the session's own */
+      val nodes = checked.nodes.map({ case (name, _) => name -> checked.snapshot(name) }).toMap
       val own = checked.nodes.map(_._1).filter(name => imported || theories.contains(name.theory))
-      val snapshots = own.map(checked.snapshot)
+      val snapshots = own.map(nodes)
       val lemmas = snapshots.flatMap(Lemma.read(state, _))
       progress.echo(lemmas.count(_.ok).toString + " of " + lemmas.length + " lemmas check")
 
-      body(Checked(session, lemmas, hol, structure(session_name).dir, snapshots))
+      val own_files = deps(session_name).proper_session_theories.map(_.path)
+      val downstream = Downstream.make(structure, session_name, own_files, nodes)
+      val definitions = own.flatMap(name => Lemma.definitions(state, nodes(name), downstream(name)))
+
+      body(Checked(session, lemmas, definitions, hol, structure(session_name).dir, snapshots))
     }
     finally { watch.stop(); session.stop() }
   }
@@ -131,12 +135,12 @@ object Pide {
     progress: Progress = new Progress
   ): List[Finding] =
     check(options, session_name, dirs, progress) { checked =>
-      val ok = checked.lemmas.filter(_.ok)
       lints.flatMap { lint =>
+        val targets = lint.targets(checked)
         val log = proper_string(options.string("linter_log")).map(Path.explode)
         val batch = options.int("linter_batch")
-        val answers = rounds(checked.session, lint.name, progress, log, batch)(a => lint.ask(ok, a, options))
-        lint.read(checked, options) ::: lint.report(ok, answers, options)
+        val answers = rounds(checked.session, lint.name, progress, log, batch)(a => lint.ask(targets, a, options))
+        lint.read(checked, options) ::: lint.report(targets, answers, options)
       }
     }
 
@@ -250,4 +254,5 @@ abstract class Lint {
   def ask(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Pide.Question]
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding]
   def read(checked: Pide.Checked, options: Options): List[Finding] = Nil
+  def targets(checked: Pide.Checked): List[Lemma] = checked.lemmas.filter(_.ok)
 }

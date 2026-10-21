@@ -6,6 +6,9 @@ session Linter_Example = HOL +
     Interp
     Simp_Only
     Diagnostic
+    Def_Lints
+    Def_Lints_Use
+    Def_Lints_Code
 
 session Linter_Simp_Hygiene in simp_hygiene = HOL +
   description "simp_hygiene example, needs etc/simpstats.patch

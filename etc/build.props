@@ -6,7 +6,11 @@ sources = \
   src/core/syntax.scala \
   src/core/lemma.scala \
   src/core/pide.scala \
+  src/core/downstream.scala \
   src/core/tool.scala \
+  src/lints/definitions/definitions.scala \
+  src/lints/datatype_plugins/datatype_plugins.scala \
+  src/lints/fun_to_primrec/fun_to_primrec.scala \
   src/lints/faster_step/faster_step.scala \
   src/lints/unused/unused.scala \
   src/lints/diagnostic_commands/diagnostic_commands.scala \

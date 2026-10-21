@@ -23,6 +23,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         type instances its facts and constants mention, or the entities REF
                         ("kind name", from the text's markup); context is "theory facts simps
                         consts types classes" for each theory in its context, joined by ";"
+  linter_names A B...   run texts A, B1 ... from the state; per Bi: oki, msi, missingi, differi, reorderedi
 
 Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
 when a question runs alone. A question cancelled while it runs answers "interrupted", with
@@ -147,6 +148,52 @@ fun used_rules st text () =
           then SOME (xname ^ Thm_Name.print_suffix (name, i)) else NONE
       | NONE => NONE);
   in map_filter (rule o #2) deps end;
+
+
+(* names a definition adds *)
+
+fun spaces st =
+  let
+    val ctxt = Toplevel.context_of st;
+    val thy = Proof_Context.theory_of ctxt;
+  in
+    [Facts.space_of (Global_Theory.facts_of thy), Facts.space_of (Proof_Context.facts_of ctxt),
+     Consts.space_of (Sign.consts_of thy)]
+  end;
+
+fun new_names space0 space = filter_out (Symtab.defined (Symtab.make_set (Name_Space.get_names space0)))
+  (Name_Space.get_names space);
+
+(*as a's context writes them*)
+fun missing st_a st_b =
+  let val ctxt = Toplevel.context_of st_a in
+    maps (fn (a, b) => map (Name_Space.extern ctxt a) (new_names b a)) (spaces st_a ~~ spaces st_b)
+    |> distinct (op =)
+  end;
+
+fun fact_tables st =
+  let val ctxt = Toplevel.context_of st
+  in [Global_Theory.facts_of (Proof_Context.theory_of ctxt), Proof_Context.facts_of ctxt] end;
+
+fun props st facts name =
+  Facts.lookup (Context.Proof (Toplevel.context_of st)) facts name |> Option.map (map Thm.prop_of o #thms);
+
+(*"differ": other theorem; "reordered": same facts in another order*)
+fun changed st0 st_a st_b =
+  let
+    val ctxt = Toplevel.context_of st_a;
+    fun compare (fa, fb) name =
+      (case (props st_a fa name, props st_b fb name) of
+        (SOME ts, SOME us) =>
+          if eq_list (op aconv) (ts, us) then NONE
+          else SOME ((if eq_set (op aconv) (ts, us) then "reordered" else "differ"),
+            Facts.extern ctxt fa name)
+      | _ => NONE);
+    fun table ((f0, fa), fb) =
+      map_filter (compare (fa, fb)) (new_names (Facts.space_of f0) (Facts.space_of fa));
+    val found = maps table (fact_tables st0 ~~ fact_tables st_a ~~ fact_tables st_b);
+    fun names kind = distinct (op =) (map #2 (filter (fn (k, _) => k = kind) found));
+  in (names "differ", names "reordered") end;
 
 
 (* goal features *)
@@ -411,6 +458,30 @@ val _ =
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>
     let val (res, t) = timed limit (run_text st text) in (verdict res, times t) end);
+
+(*per B: verdict, ms, names A lacks, facts that differ*)
+fun compare_run limit st st_a (i, text) =
+  let
+    val (res, t) = timed limit (run_state st text);
+    val k = string_of_int i;
+    val time = ms ("ms" ^ k) (Time.toMilliseconds (#elapsed t));
+  in
+    (case res of
+      Exn.Res st_b =>
+        let val (differ, reordered) = changed st st_a st_b in
+          [("ok" ^ k, "closes"), time, ("missing" ^ k, space_implode " " (missing st_a st_b)),
+           ("differ" ^ k, space_implode " " differ), ("reordered" ^ k, space_implode " " reordered)]
+        end
+    | Exn.Exn exn => [("ok" ^ k, verdict res), time, ("message" ^ k, Runtime.exn_message exn)])
+  end;
+
+val _ =
+  register "linter_names" (fn limit => fn a :: bs => fn st =>
+    let val (res, t) = timed limit (run_state st a) in
+      (case res of
+        Exn.Res st_a => ("closes", times t @ maps (compare_run limit st st_a) (map_index (apfst (curry op + 1)) bs))
+      | Exn.Exn _ => (verdict res, times t))
+    end);
 
 (*the profile is a tracing message on the command, so ask it alone*)
 val _ =

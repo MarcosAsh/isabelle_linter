@@ -42,6 +42,15 @@ public option faster_step_try0_timeout : real = 0
 public option simp_hygiene_min : int = 1000
   -- "simp_hygiene: a rule or simproc is reported once it is tried at least this often in the session"
 
+public option definition_runs : int = 3
+  -- "datatype_plugins, fun_to_primrec: the definition with and without the fix is timed this many times; medians are compared"
+
+public option definition_saving : real = 0.1
+  -- "datatype_plugins, fun_to_primrec: a fix must save at least this fraction of the definition's time"
+
+public option fun_slow : real = 5.0
+  -- "fun_to_primrec: also report a `fun` that stays and takes at least this many seconds"
+
 public option collect_timeout : real = 2
   -- "linter_collect: seconds each method gets on a step"
 

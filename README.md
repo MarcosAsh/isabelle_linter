@@ -13,6 +13,11 @@ A linter for Isabelle that checks every suggestion with the prover before showin
   nothing. It needs a patched Isabelle (below) and only reports.
 - **unused_imports** finds theory imports that can go, checked by building an edited copy of the
   session.
+- **datatype_plugins** finds `datatype` plugins (code, size, quickcheck, ...) whose content nothing
+  later uses, and deletes them with `(plugins del: ...)` if that makes the datatype faster.
+- **fun_to_primrec** finds `fun` definitions that `primrec` can make, without proving the patterns
+  and termination, if nothing later uses the facts only `fun` makes (`f.induct`, `f.elims` ...).
+  It also reports a slow `fun` that stays (`-o fun_slow=SECONDS`, default 5).
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -123,6 +128,18 @@ ROOT's theories.
 Only imports of theories outside the Isabelle distribution are tried, unless
 `-o unused_imports_distribution`. The report gives the time of each theory's commands and the
 session's critical path (the longest chain of imports) before and after, from one build each.
+
+## Definitions
+
+The definition lints read the text after a definition: the rest of its theory, the theories that
+import it, and the sessions built on its session (in the `-d` directories). A plugin stays if that
+text names something it makes, or may use it without naming it (`value` uses code, a `fun` on the
+type uses size, ...). Their fixes can still break a later theory, so check them by building the
+session and every session built on it, on a copy:
+
+```bash
+isabelle linter -l datatype_plugins,fun_to_primrec -o fun_slow=0.3 -d test Linter_Example
+```
 
 ## Collecting data
 
