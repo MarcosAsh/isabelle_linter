@@ -96,7 +96,7 @@ object Faster_Step extends Lint {
   def uses_simp(step: Step): Boolean = step.cmd.body.exists(t => simp_methods(t.source))
 
   def simp_only(step: Step, answer: Pide.Answer): Option[String] =
-    answer.get("rules").filter(rules => answer.closes && rules.nonEmpty).map { rules =>
+    answer.get("rules").filter(rules => answer.closes && rules.nonEmpty).map(Symbol.encode).map { rules =>
       step.split match {
         case Some((first, _)) => first + " (simp_all only: " + rules + ")"
         case None if answer.long("subgoals").exists(_ > 1) => "(simp_all only: " + rules + ")"
