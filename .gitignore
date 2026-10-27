@@ -2,3 +2,4 @@ lib/
 __pycache__/
 census/
 scripts/build.log
+scripts/

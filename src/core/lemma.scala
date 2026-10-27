@@ -27,6 +27,16 @@ sealed case class Cmd(command: Command, offset: Int) {
 
   def body: List[Tok] = tokens.drop(1)
   def range: Text.Range = Text.Range(tokens.head.range.start, tokens.last.range.stop)
+
+  /* the end of the whole span, with any formal comment after the last token */
+  def span_stop: Int = offset + command.length
+}
+
+object Cmd {
+  /* the commands of a theory, without white space and comments */
+  def read(node: Document.Node): List[Cmd] =
+    node.command_iterator().filterNot(_._1.is_ignored)
+      .map({ case (c, o) => Cmd(c, o) }).filter(_.tokens.nonEmpty).toList
 }
 
 /* something removable from a lemma */
@@ -37,8 +47,9 @@ sealed case class Step(goal: Cmd, cmd: Cmd, methods: String, facts: List[String]
   split: Option[(String, String)] = None)
 
 
+/* a lemma, or a single command like `datatype` for the definition lints */
 sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Document,
-    before: Cmd, cmds: List[Cmd], ok: Boolean) {
+    before: Cmd, cmds: List[Cmd], ok: Boolean, downstream: Downstream = Downstream.none) {
 
   /* text */
 
@@ -46,6 +57,9 @@ sealed case class Lemma(theory: Document.Node.Name, text: String, lines: Line.Do
   def stop: Int = cmds.last.range.stop
   def source: String = text.substring(start, stop).nn
   def key: String = theory.theory + ":" + start
+
+  /* text that may use what it defines */
+  def later: List[String] = downstream.theory.substring(stop).nn :: downstream.texts
 
   def line(offset: Int): Int = lines.position(offset).line1
   def line: Int = line(start)
@@ -172,28 +186,34 @@ object Lemma {
   /* no real proof; the PIDE session is interactive, where a lemma with `sorry` or `\<proof>` closes */
   val cheats: Set[String] = Set("sorry", "\\<proof>", "oops")
 
+  private def checked(state: Document.State, snapshot: Document.Snapshot)(c: Cmd): Boolean = {
+    val status = state.command_status(snapshot.version, c.command)
+    !status.is_failed && status.is_finished && !cheats(c.name)
+  }
+
   /* ok: every command checked, and none of them cheats */
   def read(state: Document.State, snapshot: Document.Snapshot): List[Lemma] = {
-    val node = snapshot.node
-    val text = node.source
+    val text = snapshot.node.source
     val lines = Line.Document(text)
-    val cmds =
-      node.command_iterator().filterNot(_._1.is_ignored)
-        .map({ case (c, o) => Cmd(c, o) }).filter(_.tokens.nonEmpty).toList
-
-    def checked(c: Cmd): Boolean = {
-      val status = state.command_status(snapshot.version, c.command)
-      !status.is_failed && status.is_finished && !cheats(c.name)
-    }
-
+    val cmds = Cmd.read(snapshot.node)
     for {
       (cmd, i) <- cmds.zipWithIndex
       if theorem_commands(cmd.name) && i > 0
       end <- goal_end(cmds, i)
     } yield {
       val lemma = cmds.slice(i, end + 1)
-      Lemma(snapshot.node_name, text, lines, cmds(i - 1), lemma, lemma.forall(checked))
+      Lemma(snapshot.node_name, text, lines, cmds(i - 1), lemma, lemma.forall(checked(state, snapshot)))
     }
+  }
+
+  val definition_commands: Set[String] = Set("datatype", "codatatype", "fun")
+
+  def definitions(state: Document.State, snapshot: Document.Snapshot, downstream: Downstream): List[Lemma] = {
+    val text = snapshot.node.source
+    val lines = Line.Document(text)
+    val cmds = Cmd.read(snapshot.node)
+    for ((cmd, i) <- cmds.zipWithIndex if definition_commands(cmd.name) && i > 0)
+      yield Lemma(snapshot.node_name, text, lines, cmds(i - 1), List(cmd), checked(state, snapshot)(cmd), downstream)
   }
 
   /* goals whose result is stored as a theorem, so that Thm.consolidate_theory waits for their

@@ -96,7 +96,7 @@ object Faster_Step extends Lint {
   def uses_simp(step: Step): Boolean = step.cmd.body.exists(t => simp_methods(t.source))
 
   def simp_only(step: Step, answer: Pide.Answer): Option[String] =
-    answer.get("rules").filter(rules => answer.closes && rules.nonEmpty).map { rules =>
+    answer.get("rules").filter(rules => answer.closes && rules.nonEmpty).map(Symbol.encode).map { rules =>
       step.split match {
         case Some((first, _)) => first + " (simp_all only: " + rules + ")"
         case None if answer.long("subgoals").exists(_ > 1) => "(simp_all only: " + rules + ")"
@@ -119,35 +119,41 @@ object Faster_Step extends Lint {
         val limit = Time.ms((a.ms / speedup).toLong max 1L)
         val split = step.split.map({ case (first, _) => first -> subgoals(lemma, step, first, limit) })
         val rules = if (uses_simp(step)) Some(used_rules(lemma, step, options)) else None
+        val baseline = if (options.bool("faster_step_try0")) Some(try0(lemma, step, options)) else None
         val tries = edits(step, split, rules, answers).map(m => m -> try_by(lemma, step, m, limit))
         val missing =
-          (split.map(_._2).toList ::: rules.toList ::: tries.map(_._2)).filterNot(q => answers.contains(q.key))
+          (split.map(_._2).toList ::: rules.toList ::: baseline.toList ::: tries.map(_._2))
+            .filterNot(q => answers.contains(q.key))
 
         if (missing.nonEmpty) Left(missing)
         else {
           val closing = tries.filter(t => answers(t._2.key).closes).sortBy(t => answers(t._2.key).ms)
-          closing.headOption match {
-            case None => Right(None)
-            case Some((m, _)) => confirm(lemma, step, m, a, answers, options)
-          }
+          val try0_proof = baseline.flatMap(q => try0_method(step, answers(q.key), limit))
+          confirm(lemma, step, closing.headOption.map(_._1), try0_proof, a, answers, options)
         }
     }
   }
 
-  private def confirm(lemma: Lemma, step: Step, method: String, original: Pide.Answer,
-      answers: Pide.Answers, options: Options): Result = {
-    val runs = options.int("faster_step_runs").toString
-    val timing =
-      Pide.Question(key(lemma, step, "time:" + method), lemma.theory, step.goal.command, "linter_time",
-        List(runs, step.methods, method), Time.ms(original.ms * 2 max 1000L), serial = true)
+  /* the fastest edit, and try0's proof if asked for, are re-timed; only the edit is reported,
+    try0's timing is for the question log */
+  private def confirm(lemma: Lemma, step: Step, fastest: Option[String], try0_proof: Option[String],
+      original: Pide.Answer, answers: Pide.Answers, options: Options): Result = {
+    val timings = (fastest.toList ::: try0_proof.toList).distinct.map(timing(lemma, step, _, original, options))
 
-    answers.get(timing.key) match {
-      case None => Left(List(timing))
-      case Some(t) if t.closes && t.ms2 * options.real("faster_step_speedup") < t.ms =>
-        Right(Some((method, t.ms, t.ms2)))
-      case _ => Right(None)
+    timings.filterNot(q => answers.contains(q.key)) match {
+      case Nil => Right(fastest.flatMap(m => faster(m, answers(key(lemma, step, "time:" + m)), options)))
+      case missing => Left(missing)
     }
   }
+
+  private def timing(lemma: Lemma, step: Step, method: String, original: Pide.Answer, options: Options): Pide.Question = {
+    val runs = options.int("faster_step_runs").toString
+    Pide.Question(key(lemma, step, "time:" + method), lemma.theory, step.goal.command, "linter_time",
+      List(runs, step.methods, method), Time.ms(original.ms * 2 max 1000L), serial = true)
+  }
+
+  private def faster(method: String, t: Pide.Answer, options: Options): Option[(String, Long, Long)] =
+    if (t.closes && t.ms2 * options.real("faster_step_speedup") < t.ms) Some((method, t.ms, t.ms2)) else None
 
   /* the per-subgoal and `simp only:` edits join the others once their questions are answered */
   private def edits(step: Step, split: Option[(String, Pide.Question)], rules: Option[Pide.Question],
@@ -175,6 +181,19 @@ object Faster_Step extends Lint {
 
   private def try_by(lemma: Lemma, step: Step, methods: String, timeout: Time): Pide.Question =
     Pide.Question(key(lemma, step, methods), lemma.theory, step.goal.command, "linter_try", List(methods), timeout)
+
+
+  /* the try0 baseline: Isabelle's try0 on the same goal; its fastest proof is re-timed like an
+    edit if try0 timed it under the same limit */
+
+  private def try0(lemma: Lemma, step: Step, options: Options): Pide.Question = {
+    val per_method = Time.seconds(options.real("faster_step_try0_timeout")).ms.toString
+    Pide.Question(key(lemma, step, "try0"), lemma.theory, step.goal.command, "linter_try0",
+      List(per_method), Time.seconds(options.real("linter_timeout")))
+  }
+
+  private def try0_method(step: Step, answer: Pide.Answer, limit: Time): Option[String] =
+    answer.get("method").filter(m => answer.closes && m != step.methods && answer.long("method_ms").exists(_ < limit.ms))
 
 
   /* lint interface */

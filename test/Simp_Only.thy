@@ -28,4 +28,10 @@ lemma s4: "length (map f xs) * ((2::nat)^200 * 3^150) = length xs * ((2::nat)^20
 lemma s5: "(x + y + (0::nat) = y + x) = ((2::nat)^200 * 3^150 > 0)"
   by simp
 
+datatype \<Gamma> = G1 | G2 nat
+
+(* `by (simp only: ... \<Gamma>.inject ...)`: rule names stay in symbol form, not Unicode *)
+lemma s6: "g (G2 (x + 0) = G2 y) ((2::nat)^200 * 3^150) = g (x = y) ((2::nat)^200 * 3^150)"
+  by simp
+
 end

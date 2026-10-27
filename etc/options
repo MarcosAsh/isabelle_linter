@@ -15,6 +15,15 @@ public option linter_factor : real = 5
 public option unused_runs : int = 3
   -- "unused: the lemma with and without the fix is timed this many times; medians are compared"
 
+public option unused_imports_builds : int = 10
+  -- "unused_imports: builds of the copy after the one with every proposed removal; removals not tried by then stay"
+
+public option unused_imports_distribution : bool = false
+  -- "unused_imports: also try imports of theories from the Isabelle distribution (Main, HOL-Library ...)"
+
+public option unused_imports_dir : string = ""
+  -- "unused_imports: copy the session's directory into this directory and keep it (empty: a temporary one)"
+
 public option faster_step_slow : real = 1.0
   -- "faster_step: only `by` steps that take at least this many seconds are tried"
 
@@ -23,6 +32,39 @@ public option faster_step_speedup : real = 2
 
 public option faster_step_runs : int = 3
   -- "faster_step: the winner and the original are re-timed this many times; medians are compared"
+
+public option faster_step_try0 : bool = false
+  -- "faster_step: also run try0 on each step it searches and re-time try0's proof, for the question log (HOL only)"
+
+public option faster_step_try0_timeout : real = 0
+  -- "faster_step: seconds for each method try0 runs, 0 for try0's own default (try0_default_timeout)"
+
+public option simp_hygiene_min : int = 1000
+  -- "simp_hygiene: a rule or simproc is reported once it is tried at least this often in the session"
+
+public option simp_scope_slow : real = 1.0
+  -- "simp_scope: only lemmas that take at least this many seconds are tried"
+
+public option simp_scope_speedup : real = 1.2
+  -- "simp_scope: the fixed lemma must be this many times faster (timing noise reaches 15%)"
+
+public option simp_scope_runs : int = 3
+  -- "simp_scope: runs per timing; medians are compared"
+
+public option simp_scope_greedy : int = 12
+  -- "simp_scope: drop rules one at a time if a step used at most this many"
+
+public option simp_scope_theory : bool = false
+  -- "simp_scope: also report theory [simp] declarations that at most half of later lemmas need"
+
+public option definition_runs : int = 3
+  -- "datatype_plugins, fun_to_primrec: the definition with and without the fix is timed this many times; medians are compared"
+
+public option definition_saving : real = 0.1
+  -- "datatype_plugins, fun_to_primrec: a fix must save at least this fraction of the definition's time"
+
+public option fun_slow : real = 5.0
+  -- "fun_to_primrec: also report a `fun` that stays and takes at least this many seconds"
 
 public option collect_timeout : real = 2
   -- "linter_collect: seconds each method gets on a step"

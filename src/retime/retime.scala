@@ -124,9 +124,13 @@ object Retime {
       if (done(session_name)) progress.echo("Skipping " + session_name + ": already timed")
       else {
         progress.echo(session_name + ": " + rs.length + " steps")
-        val (lines, profile) = retime_session(options, session_name, rs, dirs, profiles.isDefined, progress)
-        for (path <- profiles if profile.nonEmpty) File.append(path, profile.mkString("", "\n", "\n"))
-        File.append(output, lines.mkString("", "\n", "\n"))
+        /* a session that stops (its prover died, say) is not written, so a resumed run retries it */
+        try {
+          val (lines, profile) = retime_session(options, session_name, rs, dirs, profiles.isDefined, progress)
+          for (path <- profiles if profile.nonEmpty) File.append(path, profile.mkString("", "\n", "\n"))
+          File.append(output, lines.mkString("", "\n", "\n"))
+        }
+        catch { case ERROR(msg) => progress.echo_warning("Retime unfinished: " + session_name + "\n" + msg) }
       }
     }
   }

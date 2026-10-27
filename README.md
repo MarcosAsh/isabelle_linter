@@ -6,6 +6,21 @@ A linter for Isabelle that checks every suggestion with the prover before showin
 - **faster_step** finds `by` steps that another method proves faster. It tries other methods,
   the step without each of its facts, for `by M1 M2` the fastest method for each subgoal, and
   `simp only:` with the rewrite rules the step's proof used.
+- **diagnostic_commands** finds commands that prove nothing but are checked on every build:
+  `nitpick`, `quickcheck`, `sledgehammer`, `find_theorems`, `thm`, `value`, `export_code` and
+  the rest of kind `diag`, each with the time it took when the session was checked.
+- **simp_hygiene** finds `[simp]` rules, simprocs and classical rules that are tried often for
+  nothing. It needs a patched Isabelle (below) and only reports.
+- **unused_imports** finds theory imports that can go, checked by building an edited copy of the
+  session.
+- **datatype_plugins** finds `datatype` plugins (code, size, quickcheck, ...) whose content nothing
+  later uses, and deletes them with `(plugins del: ...)` if that makes the datatype faster.
+- **fun_to_primrec** finds `fun` definitions that `primrec` can make, without proving the patterns
+  and termination, if nothing later uses the facts only `fun` makes (`f.induct`, `f.elims` ...).
+  It also reports a slow `fun` that stays (`-o fun_slow=SECONDS`, default 5).
+- **simp_scope** finds simp rules set above the steps that don't need them: a `note
+  simps[simp] = ...` in a proof loses its `[simp]`, and each step gets only the theorems it
+  needs as `simp add:`. A step's own `simp add:` bundle, like `c_defs`, is cut down the same way.
 
 ```
 Unused.thy:18: [unused] not needed:
@@ -18,7 +33,7 @@ Example.thy:9: [faster_step] `by (simp add: distrib_left)` takes 1 ms instead of
 
 ## Setup
 
-You need Isabelle2026 (tested with Isabelle2026-RC4). The main branch is for Isabelle2025-2.
+You need Isabelle2026. The main branch is for Isabelle2025-2.
 
 ```bash
 isabelle components -u ~/dev/isabelle_linter
@@ -33,11 +48,115 @@ isabelle linter -d DIR SESSION                                  # your own sessi
 isabelle linter -F -d DIR SESSION                               # also apply the fixes
 ```
 
-`-l unused` or `-l faster_step` runs just one lint. By default faster_step only tries steps
-over 1 second (`-o faster_step_slow=SECONDS`).
+`-l unused`, `-l faster_step` or `-l simp_scope` runs just one lint. By default faster_step only
+tries steps over 1 second (`-o faster_step_slow=SECONDS`).
+
+`-o faster_step_try0=true -o linter_log=FILE` also runs Isabelle's try0 on each step faster_step
+tries and re-times its proof the same way, as a baseline in the question log; it never changes
+the findings.
 
 Assumptions are reported but never removed by `-F`, since removing one changes the lemma's
 statement.
+
+## Diagnostic commands
+
+```bash
+isabelle linter -d test -l diagnostic_commands Linter_Example
+```
+
+A diagnostic command leaves the proof state as it was, so deleting one cannot change a theorem.
+`-F` deletes only proof and counterexample search (`nitpick`, `quickcheck`, `sledgehammer`,
+`try`, `try0`, `solve_direct`, `find_*`, ...), with its `lemma ... oops` if that is all the lemma
+does. `value`, `export_code` and the like may be tests: the advice is to move them to a test
+session, so that sessions importing this one do not wait for them, and `-F` leaves them. A search
+with `expect =` is a test too, as is every search of a tool whose `*_params` set `expect`
+somewhere in the session. `thm`, `term`, `print_*` and other printing commands are reported only.
+
+## Simp hygiene
+
+`simp_hygiene` finds rules that the simplifier and the classical reasoner keep trying for
+nothing. Every lemma of the session is run once with the rules counted: how often the
+simplifier's net offers each `[simp]` rule, how often it matches and rewrites, how often a
+conditional rule's condition fails and the time that takes, each simproc's calls, rewrites and
+time, and how often `auto`, `fast`, `force` ... try each classical rule and `blast` is offered
+it. Of what is tried at least 1000 times in the session (`-o simp_hygiene_min`), it reports
+
+- `[simp]` rules that never rewrote, and simprocs that never rewrote;
+- conditional `[simp]` rules whose condition held in at most 10% of its tries;
+- classical rules in the proofs of at most 5% of the lemmas that try them.
+
+```
+Simp_Hygiene.thy:23: [simp_hygiene] [simp] rule `Simp_Hygiene.pair_same` offered 445 times in 9 lemmas, never matched, never rewrote
+  declared here: drop [simp], or `declare Simp_Hygiene.pair_same [simp del]` where it is not needed
+  information only, nothing was re-run without it; counted over 25 of 25 lemmas
+```
+
+Stock Isabelle cannot count this: its simplifier trace hooks only see rules that already matched,
+and the classical reasoner has none. The lint needs an Isabelle with `etc/simpstats.patch`, which
+adds a `rule_statistics` option (off by default); a release would need it upstream:
+
+```bash
+cp -a Isabelle2026 Isabelle2026-simpstats && cd Isabelle2026-simpstats
+patch -p1 < ~/dev/isabelle_linter/etc/simpstats.patch
+echo -n Isabelle2026-simpstats > etc/ISABELLE_IDENTIFIER    # own heaps, apart from the release's
+bin/isabelle linter -d ~/dev/isabelle_linter/test -o simp_hygiene_min=100 Linter_Simp_Hygiene
+```
+
+Its findings are information only and never part of `-F`: removing `[simp]` or `[intro]`
+changes every later proof, also in other sessions and in commands that are not lemmas, which
+only a rebuild checks. Only lemmas are counted, not `fun`, `datatype` or other commands. The
+equations of `fun` and `primrec` reach the simpset without a name, so they are counted together
+under their constant.
+
+## Unused imports
+
+`-l unused_imports` finds theory imports that can go, either because another import brings the
+theory in anyway or because nothing in the session needs it.
+
+```bash
+isabelle linter -l unused_imports -d test Linter_Imports
+```
+
+The prover says which theories each theory uses: whose theorems its proofs use, whose constants,
+types, classes and type instances it mentions, and whose names its text refers to. An import is
+proposed if every theory of the session still has those without it. Notation and other implicit
+uses don't show up there, so the proposals are checked by building a copy of the session's
+directory (sessions renamed `*_Imports`), together with the sessions of the same ROOT that build on
+it. Imports that break a theory, or change what it exports (`export_theory`: types, constants,
+theorem statements, instances), are put back, and what is reported is a set of removals the copy
+built with. Sessions in other directories that build on the session are listed but not built.
+`-F` removes the imports, and adds any theory that only those imports kept in the session to the
+ROOT's theories.
+
+Only imports of theories outside the Isabelle distribution are tried, unless
+`-o unused_imports_distribution`. The report gives the time of each theory's commands and the
+session's critical path (the longest chain of imports) before and after, from one build each.
+
+## Definitions
+
+The definition lints read the text after a definition: the rest of its theory, the theories that
+import it, and the sessions built on its session (in the `-d` directories). A plugin stays if that
+text names something it makes, or may use it without naming it (`value` uses code, a `fun` on the
+type uses size, ...). Their fixes can still break a later theory, so check them by building the
+session and every session built on it, on a copy:
+
+```bash
+isabelle linter -l datatype_plugins,fun_to_primrec -o fun_slow=0.3 -d test Linter_Example
+```
+
+## Simp scope
+
+```bash
+isabelle linter -l simp_scope -d test Linter_Example
+```
+
+simp_scope only tries lemmas that take a second (`-o simp_scope_slow=SECONDS`). It asks each step
+which theorems of the notes' facts and of its own simp facts its proof used, drops them one at a
+time while the step still closes alone, then re-runs the whole lemma with the narrower rules. The
+fix is kept only if the lemma gets faster (medians of 3 runs alone, `-o simp_scope_speedup=1.2`).
+`declare` and `lemmas` outside proofs are left alone, as other theories see them too;
+`-o simp_scope_theory=true` reports those that at most half of the later lemmas in their theory
+need.
 
 ## Collecting data
 
@@ -69,31 +188,6 @@ taskset -c 0-11 isabelle linter_retime -d AFP -I timings.tsv -n 200 -O retime.ts
 
 `-P profiles.tsv` also runs each step once under Poly/ML's profiler and keeps its busiest ML
 functions, which shows where a slow step spends its time.
-
-`scripts/census_build.py` builds the whole AFP this way (`-j`, `-t` for jobs and threads). The
-census sample is the 150 entries in `scripts/entries.txt`:
-
-```bash
-isabelle build -d AFP $(sed 's|^|-D AFP/|' scripts/entries.txt) -X slow -X very_slow -X large \
-  -j 3 -o threads=6 -o build_timing_threshold=0.01
-```
-
-## Scripts
-
-- `lint_afp.py LINT -n 20`: run a lint with `-F` on copies of AFP entries and rebuild them;
-  `-o OPTION` goes to the linter, every question goes to `logs/SESSION.tsv`; `-s census/LINT`
-  summarises.
-- `census_build.py`: build the AFP with command timings, for `linter_census`.
-- `replay.py PATCHED NEW_AFP OUT`: apply the edits in patched copies to another AFP release
-  (`-i` its isabelle) and build; edits that break are undone, `OUT/replay.tsv` says which survive.
-- `fragility.py CENSUS OLD_THYS NEW_THYS`: which census steps changed between two AFP versions, by
-  step time and method.
-- `edit_summary.py LOG.tsv...`: hit rate, time saved, search time and winning edit kinds from
-  faster_step question logs.
-- `repeatability.py RETIME [OTHER]`: how much a step's runs vary, and medians across runs.
-- `plot_steps.py`: the step-time figures.
-- `timing_box.py`: quiet the timing machine (root; `--undo`).
-- `peephole.py`: lookup table of winning rewrites from `linter_collect` output.
 
 ## How it works
 
