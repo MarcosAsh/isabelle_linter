@@ -101,13 +101,13 @@ object Simp_Scope extends Lint {
 
   def edited(text: String, start: Int, edits: Edits): String =
     edits.sortBy(_._1.start).reverse.foldLeft(text) { case (t, (r, s)) =>
-      t.substring(0, r.start - start) + s + t.substring(r.stop - start)
+      t.substring(0, r.start - start).nn + s + t.substring(r.stop - start)
     }
 
   def methods(lemma: Lemma, use: Use, rules: List[Rule]): String = {
     val start = use.cmd.body.head.range.start
     val es = edits(lemma, use, rules)
-    edited(lemma.text.substring(start, use.cmd.range.stop), start, es)
+    edited(lemma.text.substring(start, use.cmd.range.stop).nn, start, es)
   }
 
 
@@ -324,8 +324,8 @@ object Simp_Scope extends Lint {
   private def inside(cmd: Cmd, r: Text.Range): Boolean = cmd.range.start <= r.start && r.stop <= cmd.range.stop
 
   private def change(lemma: Lemma, cmd: Cmd, es: Edits): String = {
-    def flat(s: String): String = s.replaceAll("\\s+", " ")
-    val old = lemma.text.substring(cmd.range.start, cmd.range.stop)
+    def flat(s: String): String = s.replaceAll("\\s+", " ").nn
+    val old = lemma.text.substring(cmd.range.start, cmd.range.stop).nn
     val mine = es.filter(e => inside(cmd, e._1))
     "  line " + lemma.line(cmd.range.start) + ": `" + flat(old) + "` -> `" + flat(edited(old, cmd.range.start, mine)) + "`"
   }

@@ -21,7 +21,7 @@ object Downstream {
   def make(structure: Sessions.Structure, session: String, own: List[Path],
       snapshots: Map[Document.Node.Name, Document.Snapshot]): Document.Node.Name => Downstream = {
     lazy val sessions = session_texts(structure, session, own)
-    val imports = snapshots.map({ case (name, s) => name -> s.node.header.imports })
+    val imports = snapshots.map({ case (name, s) => name -> s.node.thy.imports.map(_._1) })
     def text(name: Document.Node.Name): String = formal(snapshots(name).node.source)
     name => new Downstream(() => text(name), () => importers(imports, name).map(text) ::: sessions)
   }
@@ -39,11 +39,11 @@ object Downstream {
   /* the session's own theories are left out: their order is known */
   def session_texts(structure: Sessions.Structure, session: String, own: List[Path]): List[String] = {
     val later = structure.build_descendants(List(session)).filterNot(_ == session)
-    val skip = own.map(_.canonical_file).toSet
+    val skip = own.map(_.canonical).toSet
     val files =
-      later.map(structure(_).dir.canonical_file).distinct
-        .flatMap(dir => File.find_files(dir, _.getName.endsWith(".thy")))
-    files.map(_.getCanonicalFile).distinct.filterNot(skip).map(f => formal(File.read(f)))
+      later.map(structure(_).dir.canonical).distinct
+        .flatMap(dir => File.find_files(dir, _.file_name.endsWith(".thy")))
+    files.map(_.canonical).distinct.filterNot(skip).map(f => formal(File.read(f)))
   }
 
 
@@ -75,12 +75,12 @@ object Downstream {
       while (j < text.length && text(j) != '"') j += (if (text(j) == '\\') 2 else 1)
       j + 1 min text.length
     }
-    def keep(j: Int): Unit = { out ++= text.substring(i, j); i = j }
-    def blank(j: Int): Unit = { out ++= text.substring(i, j).map(c => if (c == '\n') c else ' '); i = j }
+    def keep(j: Int): Unit = { out ++= text.substring(i, j).nn; i = j }
+    def blank(j: Int): Unit = { out ++= text.substring(i, j).nn.map(c => if (c == '\n') c else ' '); i = j }
 
     /* a document command or \<comment> with its cartouche */
     def informal: Option[Int] = {
-      val rest = text.subSequence(i, text.length)
+      val rest = text.subSequence(i, text.length).nn
       val doc = if (line_start) document.findPrefixMatchOf(rest) else None
       val com = if (text.startsWith("\\<comment>", i)) comment.findPrefixMatchOf(rest) else None
       (doc orElse com).map(i + _.end).filter(j => opens.exists(text.startsWith(_, j))).map { j =>
@@ -127,5 +127,5 @@ object Downstream {
       starts = command_start.findAllMatchIn(text).toList
       (m, next) <- starts.zip(starts.drop(1).map(_.start) :+ text.length)
       if names(m.group(1))
-    } yield text.substring(m.start, next)
+    } yield text.substring(m.start, next).nn
 }

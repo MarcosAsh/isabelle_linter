@@ -24,7 +24,7 @@ object Simp_Text {
 
   def reads_simpset(t: Tok): Boolean = t.token.is_name && (simp_methods(t.source) || clasimp_methods(t.source))
 
-  def source(text: String, toks: List[Tok]): String = text.substring(toks.head.range.start, toks.last.range.stop)
+  def source(text: String, toks: List[Tok]): String = text.substring(toks.head.range.start, toks.last.range.stop).nn
 
 
   /* `note NAME[simp] = a b`, `note [simp] = a b`, `note a[simp] b[simp]`; also declare */
@@ -77,9 +77,9 @@ object Simp_Text {
   def scope(cmds: List[Cmd], i: Int): List[Cmd] = {
     var depth = 0
     cmds.drop(i + 1).takeWhile { c =>
-      if (Keyword.proof_open(c.kind)) depth += 1
-      else if (Keyword.proof_close(c.kind)) depth -= 1
-      depth >= 0 && !(depth == 0 && c.kind == Keyword.NEXT_BLOCK) && !Keyword.qed_global(c.kind)
+      if (Keyword.proof_open_kinds(c.kind)) depth += 1
+      else if (Keyword.proof_close_kinds(c.kind)) depth -= 1
+      depth >= 0 && !(depth == 0 && c.kind == Keyword.NEXT_BLOCK) && !Keyword.qed_global_kinds(c.kind)
     }
   }
 

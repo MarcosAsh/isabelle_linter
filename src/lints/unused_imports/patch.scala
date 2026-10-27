@@ -30,7 +30,7 @@ object Patch {
   def qualify(text: String, names: List[String], theories: Set[String]): String =
     names.foldLeft(text) { (t, name) =>
       ("(?<![\\w.])" + Pattern.quote(name) + "\\.(\\w+)").r.replaceAllIn(t, m =>
-        Matcher.quoteReplacement(if (theories(m.group(1))) patched(name) + "." + m.group(1) else m.matched))
+        Matcher.quoteReplacement(if (theories(m.group(1))) patched(name) + "." + m.group(1) else m.matched).nn)
     }
 
   private val root_keywords =
@@ -43,9 +43,9 @@ object Patch {
     val renamed = Matcher.quoteReplacement("\"" + patched(name) + "\"")
     section match {
       case "session" =>
-        line.replaceAll("(session\\s+)" + whole(name), "$1" + renamed)
-          .replaceAll("(=\\s*)" + whole(name) + "(\\s*\\+)", "$1" + renamed + "$2")
-      case "sessions" => line.replaceAll(whole(name), renamed)
+        line.replaceAll("(session\\s+)" + whole(name), "$1" + renamed).nn
+          .replaceAll("(=\\s*)" + whole(name) + "(\\s*\\+)", "$1" + renamed + "$2").nn
+      case "sessions" => line.replaceAll(whole(name), renamed).nn
       case _ => line
     }
   }
@@ -61,7 +61,7 @@ object Patch {
         root_keyword(line).foreach(section = _)
         names.foldLeft(line)(rename_line(_, section, _))
       }
-    qualify(lines.mkString.replaceAll("\\bdocument\\s*=\\s*\"?pdf\"?", "document = false"), names, theories)
+    qualify(lines.mkString.replaceAll("\\bdocument\\s*=\\s*\"?pdf\"?", "document = false").nn, names, theories)
   }
 
   /* the ROOT with theories (quoted) added after the last `theories` section of session */
@@ -75,7 +75,7 @@ object Patch {
       for ((line, i) <- lines.zipWithIndex) {
         session_names(line).foreach(current = _)
         root_keyword(line).foreach(section = _)
-        if (current == session && section == "theories" && line.trim.nonEmpty) last = i
+        if (current == session && section == "theories" && line.trim.nn.nonEmpty) last = i
       }
       if (last < 0) error("No theories for session " + quote(session) + " in ROOT")
       val (before, after) = lines.splitAt(last + 1)
@@ -90,7 +90,7 @@ object Patch {
     val root_path = target + Sessions.ROOT
     val root = File.read(root_path)
     val names = session_names(root)
-    val files = File.find_files(target.file, _.getName.endsWith(".thy")).map(File.path)
+    val files = File.find_files(target, _.file_name.endsWith(".thy"))
     val theories = files.map(_.base.implode.stripSuffix(".thy")).toSet
     File.write(root_path, rename_root(root, names, theories))
     for (path <- files) File.write(path, qualify(File.read(path), names, theories))
@@ -122,7 +122,7 @@ object Patch {
       toks.filter(t => !t._1.is_space && t._2.stop <= r.start).lastOption.map(_._2.stop).getOrElse(r.start)
     indices.toList.sorted.reverse.foldLeft(text) { (t, i) =>
       val r = ranges(i)
-      t.substring(0, start(r)) + t.substring(r.stop)
+      t.substring(0, start(r)).nn + t.substring(r.stop)
     }
   }
 
@@ -151,10 +151,10 @@ object Patch {
       val commands = Properties.uncompress(store.read_command_timings(db, session))
       val times =
         commands.groupMapReduce(props => Path.explode(Position.File.get(props)).canonical.implode)(
-          Markup.Elapsed.get)(_ + _)
-      val timing = store.read_session_timing(db, session)
-      Built(results(session).ok, false, content(store, session), times, Markup.Elapsed.get(timing),
-        Markup.CPU.get(timing), store.read_errors(db, session))
+          Markup.Timing_Properties.Elapsed.get)(_ + _)
+      val timing = store.read_session_timing(db, session).ml_timing
+      Built(results(session).ok, false, content(store, session), times, timing.elapsed.seconds,
+        timing.cpu.seconds, store.read_errors(db, session))
     }
   }
 

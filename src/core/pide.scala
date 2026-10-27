@@ -44,8 +44,9 @@ object Pide {
     /* no forked proofs: a question must see every proof it starts fail or finish, and an
       unnamed or non-theorem result is not joined by Thm.consolidate_theory */
     val resources =
-      Headless.Resources.make(options + "parallel_proofs=0", logic, session_dirs = dirs,
-        include_sessions = deps.sessions_structure.imports_topological_order, progress = progress)
+      Headless.Resources.make(options + "parallel_proofs=0", logic, Logger.make_progress(progress),
+        session_dirs = dirs, include_sessions = deps.sessions_structure.imports_topological_order,
+        progress = progress)
     val session = resources.start_session(progress = progress)
     val watch = new Watch(session, progress)
     try {
@@ -101,7 +102,7 @@ object Pide {
     @volatile private var peak = Space.zero
     private val consumer =
       Session.Consumer[Session.Runtime_Statistics]("linter_stats") { stats =>
-        val used = ML_Statistics.memory_status(stats.props).heap_used
+        val used = ML_Statistics.memory_status(stats.props).heap_used_minor
         if (used.bytes > peak.bytes) peak = used
         last = stats.props
       }
@@ -115,7 +116,7 @@ object Pide {
       else {
         val memory = ML_Statistics.memory_status(last)
         def int(name: String): Int = Properties.get(last, name).flatMap(Value.Int.unapply).getOrElse(0)
-        "heap " + memory.heap_used.print + " of " + memory.heap_size.print + " (peak " + peak.print +
+        "heap " + memory.heap_used_minor.print + " of " + memory.heap_size.print + " (peak " + peak.print +
           "), GC " + memory.gc_percent + "%, tasks " + int("tasks_running") + " running " +
           int("tasks_ready") + " ready, workers " + int("workers_active") + " of " + int("workers_total") + " active"
       }
@@ -167,7 +168,7 @@ object Pide {
   /* one row per question: lint, function, key, args, verdict, then the answer's properties; a round
     cut short by an error logs its missing answers as unanswered */
   private def write_log(path: Path, lint: String, questions: List[Question], answers: Answers): Unit = {
-    def clean(s: String): String = s.replace('\t', ' ').replace('\n', ' ')
+    def clean(s: String): String = s.replace('\t', ' ').nn.replace('\n', ' ').nn
     val rows =
       for (q <- questions) yield {
         val a = answers.getOrElse(q.key, unanswered)

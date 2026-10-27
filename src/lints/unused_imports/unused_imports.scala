@@ -32,8 +32,8 @@ object Unused_Imports {
   def refs(snapshot: Document.Snapshot): List[String] =
     snapshot.select(Text.Range(0, snapshot.node.source.length), Markup.Elements(Markup.ENTITY), _ =>
       {
-        case Text.Info(_, XML.Elem(markup @ Markup.Entity(kind, name), _))
-        if entity_kinds(kind) && Markup.Entity.Ref.unapply(markup).isDefined => Some(kind + " " + name)
+        case Text.Info(_, XML.Elem(markup @ Markup.Entity(entry), _))
+        if entity_kinds(entry.kind) && Markup.Entity.Ref.unapply(markup).isDefined => Some(entry.kind + " " + entry.name)
         case _ => None
       }).map(_.info).distinct
 
@@ -68,7 +68,7 @@ object Unused_Imports {
   def keyword_theories(scope: Scope): Map[String, Set[String]] =
     (for {
       (thy, entry) <- scope.known.toList
-      (keyword, _) <- entry.header.keywords
+      (keyword, _) <- entry.keywords
     } yield keyword -> thy).groupMap(_._1)(_._2).map({ case (k, ts) => k -> ts.toSet })
 
   /* a theory also uses the theories that declare its keywords */
@@ -104,7 +104,7 @@ object Unused_Imports {
     sessions: List[String],
     elsewhere: List[String],
     theories: Map[String, List[String]],
-    known: Map[String, Document.Node.Entry]
+    known: Map[String, Resources.Thy]
   ) {
     def own: List[String] = theories(session)
     def info: Sessions.Info = structure(session)
@@ -116,25 +116,25 @@ object Unused_Imports {
 
     /* how the ROOT can name a theory of the session */
     def root_entry(thy: String): String =
-      File.relative_path(info.dir.canonical, path(thy).canonical).map(_.implode.stripSuffix(".thy"))
+      File.get_relative_path(info.dir.canonical, path(thy).canonical).map(_.implode.stripSuffix(".thy"))
         .getOrElse(Long_Name.base_name(thy))
     def checked: List[String] = sessions.flatMap(theories)
-    def graph: Theory_Graph = new Theory_Graph(known.map({ case (t, e) => t -> e.header.imports.map(_.theory) }))
+    def graph: Theory_Graph = new Theory_Graph(known.map({ case (t, e) => t -> e.imports.map(_._1.theory) }))
     def path(thy: String): Path = known(thy).name.path
 
     /* the header's imports, as the text has them */
     def editable(thy: String): Boolean =
-      Patch.import_ranges(File.read(path(thy))).length == known(thy).header.imports.length
+      Patch.import_ranges(File.read(path(thy))).length == known(thy).imports.length
 
     /* a theory of the copy */
     def copy_path(copy: Path, thy: String): Path =
-      copy + File.relative_path(dir.canonical, path(thy).canonical).getOrElse(error("Theory outside " + dir))
+      copy + File.get_relative_path(dir.canonical, path(thy).canonical).getOrElse(error("Theory outside " + dir))
 
     /* outside the Isabelle distribution, or everything if the option says so */
     def in_scope(thy: String, distribution: Boolean): Boolean = {
       val q = structure.theory_qualifier(thy)
       distribution || !structure.defined(q) ||
-        File.relative_path(Path.explode("~~").canonical, structure(q).dir.canonical).isEmpty
+        File.get_relative_path(Path.explode("~~").canonical, structure(q).dir.canonical).isEmpty
     }
   }
 
@@ -317,7 +317,7 @@ object Unused_Imports {
   private def plural(n: Int, what: String, whats: String = ""): String =
     n.toString + " " + (if (n == 1) what else proper_string(whats).getOrElse(what + "s"))
 
-  private def seconds(x: Double): String = String.format("%.2f s", x)
+  private def seconds(x: Double): String = Library.format("%.2f s", x)
 
   private def quoted(thy: String): String = "`" + Long_Name.base_name(thy) + "`"
 

@@ -29,7 +29,7 @@ object Tool {
   /* the text of range with the edits inside it, sorted and disjoint */
   def replace(text: String, range: Text.Range, edits: List[(Text.Range, String)]): String =
     edits.reverse.foldLeft(range.substring(text)) { case (t, (r, s)) =>
-      t.substring(0, r.start - range.start) + s + t.substring(r.stop - range.start)
+      t.substring(0, r.start - range.start).nn + s + t.substring(r.stop - range.start)
     }
 
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
@@ -41,7 +41,7 @@ object Tool {
       val fixed =
         lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (t, (r, s)) =>
           if (r.substring(t) != r.substring(checked)) error("File changed: " + path)
-          t.substring(0, r.start) + s + t.substring(r.stop)
+          t.substring(0, r.start).nn + s + t.substring(r.stop)
         }
       File.write(path, fixed)
       progress.echo("Fixed " + lemmas.length + " lemmas (" + fs.length + " findings) in " + path.implode)

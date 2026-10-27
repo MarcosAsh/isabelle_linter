@@ -53,7 +53,7 @@ object Simp_Hygiene extends Lint {
       case t :: _ =>
         val at = t.range.start - lemma.start
         val name = if (t.is("[")) result_name + " " else result_name + ": "
-        lemma.source.substring(0, at) + name + lemma.source.substring(at)
+        lemma.source.substring(0, at).nn + name + lemma.source.substring(at)
       case Nil => lemma.source
     }
   }
@@ -112,7 +112,7 @@ object Simp_Hygiene extends Lint {
 
   /* the rule is `Thy.name`, `Thy.locale.name` ..., maybe with a `(i)` */
   def declaration(lemmas: List[Lemma], rule: String, attributes: Set[String]): Option[Lemma] = {
-    val fact = rule.replaceAll("\\(\\d+\\)$", "")
+    val fact = rule.replaceAll("\\(\\d+\\)$", "").nn
     lemmas.find { l =>
       val thy = theory_base(l)
       declared_name(l, attributes).exists(n => fact.startsWith(thy + ".") && fact.endsWith("." + n))

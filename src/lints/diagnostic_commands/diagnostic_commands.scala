@@ -63,8 +63,8 @@ object Diagnostic_Commands extends Lint {
   def deletion(text: String, start: Int, stop: Int): Text.Range = {
     val line_start = text.lastIndexOf('\n', start - 1) + 1
     val line_stop = text.indexOf('\n', stop) match { case -1 => text.length case i => i + 1 }
-    val before = text.substring(line_start, start).isBlank
-    val after = text.substring(stop, line_stop).isBlank
+    val before = text.substring(line_start, start).nn.isBlank
+    val after = text.substring(stop, line_stop).nn.isBlank
     if (before && after) Text.Range(line_start, line_stop)
     else if (before) Text.Range(start, spaces_after(text, stop))
     else Text.Range(spaces_before(text, start), stop)
