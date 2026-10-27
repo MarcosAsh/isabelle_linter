@@ -155,22 +155,26 @@ object Simp_Scope extends Lint {
         case missing => Left(missing)
       }
 
-    /* used rules minus each one the step does without alone */
+    /* used rules minus each one the step does without alone; the base decides for all of them, so
+      a timeout under load must not: as written it already closed, else it gets the lemma's budget */
     private def greedy(use: Use, proof: Pide.Answer): Either[List[Pide.Question], List[Rule]] = {
       val rules = used(lemma, use, proof, members = true)
       val limit = Time.ms(proof.ms * 2 max 1000L min timeout.ms)
-      def ask(rs: List[Rule]): Pide.Question = try_question(use, compress(lemma, use, proof, rs), limit)
+      def ask(rs: List[Rule], limit: Time): Pide.Question = try_question(use, compress(lemma, use, proof, rs), limit)
 
       if (rules.isEmpty || rules.length > options.int("simp_scope_greedy")) Right(rules)
       else {
-        val base = ask(rules)
-        val drops = rules.map(r => r -> ask(rules.filterNot(_ == r)))
-        answered(base :: drops.map(_._2)).map { as =>
-          if (!as.head.closes) rules
+        val base = if (as_written(use, proof, rules)) None else Some(ask(rules, budget))
+        val drops = rules.map(r => r -> ask(rules.filterNot(_ == r), limit))
+        answered(base.toList ::: drops.map(_._2)).map { _ =>
+          if (!base.forall(q => answers(q.key).closes)) rules
           else rules.filterNot(r => drops.exists({ case (s, q) => s == r && answers(q.key).closes }))
         }
       }
     }
+
+    private def as_written(use: Use, proof: Pide.Answer, rules: List[Rule]): Boolean =
+      use.notes.isEmpty && methods(lemma, use, compress(lemma, use, proof, rules)) == use.step.get.methods
 
     /* fixes from fine to coarse: rules left, all used, whole facts, then own facts only */
     private def candidates(proofs: Map[Use, Pide.Answer], kept: Map[Use, List[Rule]]): List[Edits] = {
