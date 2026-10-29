@@ -1,14 +1,6 @@
 (*  Title:      isabelle_linter/ml/linter_try0.ML
 
-Print function for HOL sessions. Args: INSTANCE, TIMEOUT_MS, then
-
-  linter_try0 MS   run try0 on the goal, as the try0 command does: its schedule, each method
-                   with MS ms (0: try0's own default, try0_default_timeout); method is the
-                   fastest proof that closes the goal and method_ms its time as try0 measured
-                   it, first is try0's own suggestion, found everything it found
-
-try0 runs a slice of its schedule in parallel and sorts what it finds by time, so method_ms is
-taken under load. ms is the whole run.
+Print function for HOL sessions that runs try0 on a step's goal, as a baseline for faster_step.
 *)
 
 structure Linter_Try0 =
@@ -16,9 +8,10 @@ struct
 
 fun method_timeout ms = if ms <= 0 then NONE else SOME (Time.fromMilliseconds ms);
 
-(*try0 says `apply` for a proof that leaves goals*)
+(*try0 says `apply` for a proof that leaves goals.*)
 fun closes ({command, ...}: Try0.result) = String.isPrefix "by " command;
 
+(*try0 sorts what it finds by time, measured while it runs a slice of its schedule in parallel.*)
 fun found (results: Try0.result list) =
   space_implode "; " (map (fn {name, time, ...} => name ^ " " ^ string_of_int (Time.toMilliseconds time)) results);
 
@@ -31,6 +24,8 @@ fun describe [] = ("fails", [])
         | NONE => ("fails", listed))
       end;
 
+(*linter_try0 MS: try0 with MS ms for each method, 0 for its default; method is the fastest proof
+  that closes, method_ms its time, first try0's own suggestion and found all it found.*)
 val _ =
   Linter_Query.register "linter_try0" (fn limit => fn [ms] => fn st =>
     let
