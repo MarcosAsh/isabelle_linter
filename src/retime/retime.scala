@@ -54,6 +54,35 @@ object Retime {
     }
   }
 
+  /* datatype_no_proper_subterm: as is, without, cached; in turn on the same state, then counted */
+  val variant_fields: List[String] =
+    (for (i <- List(0, 1, 2); f <- List("verdict", "ms", "cpu", "gc", "runs")) yield f + i) :::
+      List("calls", "hits", "inside_ms", "step_ms", "counted_verdict")
+
+  def time_variants(checked: Pide.Checked, lemma: Lemma, step: Step, runs: Int, timeout: Time,
+      progress: Progress): List[String] = {
+    val key = lemma.key + ":" + step.cmd.offset + ":variants"
+    val total = Time.ms(timeout.ms * (3 * runs + 2))
+    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_simproc_variants",
+      List(runs.toString, timeout.ms.toString, step.methods), total)
+    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    val fields = variant_fields.map(answer.get(_).getOrElse(""))
+    if (answer.closes) fields else answer.verdict :: fields.tail
+  }
+
+  /* RETIME_WITHOUT set: the variants instead of the plain timing */
+  def variants_mode: Boolean = Isabelle_System.getenv("RETIME_WITHOUT").nonEmpty
+
+  def variants_line(checked: Pide.Checked, row: Row, found: Option[(Lemma, Step)], runs: Int, timeout: Time,
+      progress: Progress): String = {
+    val fields = found match {
+      case None => "not_found" :: variant_fields.tail.map(_ => "")
+      case Some((lemma, step)) => time_variants(checked, lemma, step, runs, timeout, progress)
+    }
+    progress.echo("retime: " + fields.mkString(" ") + " " + row.text.take(60))
+    ((row.session :: row.file :: row.offset.toString :: row.seconds.toString :: fields) :+ row.text).mkString("\t")
+  }
+
   /* the profile is a tracing message on the step's command; asked alone, it can only be this one's */
   val profile_top = 40
 
@@ -87,24 +116,27 @@ object Retime {
       val results =
         for ((row, found) <- find_steps(checked, rows)) yield {
           val timeout = Time.seconds((row.seconds * options.real("retime_factor")) max 10.0)
-          val (verdict, median, cpu, gc, each) =
-            found match {
-              case None => ("not_found", None, None, None, "")
-              case Some((lemma, step)) => time_step(checked, lemma, step, runs, timeout, progress)
-            }
-          val profiled =
-            for {
-              (lemma, step) <- found if profile && verdict == "closes"
-              report <- profile_step(checked, lemma, step, timeout, progress)
-            } yield profile_lines(row, report)
+          if (variants_mode) (variants_line(checked, row, found, runs, timeout, progress), Nil)
+          else {
+            val (verdict, median, cpu, gc, each) =
+              found match {
+                case None => ("not_found", None, None, None, "")
+                case Some((lemma, step)) => time_step(checked, lemma, step, runs, timeout, progress)
+              }
+            val profiled =
+              for {
+                (lemma, step) <- found if profile && verdict == "closes"
+                report <- profile_step(checked, lemma, step, timeout, progress)
+              } yield profile_lines(row, report)
 
-          progress.echo(Library.format("retime: %8.2f s -> %s %s", row.seconds,
-            median.map(ms => Library.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
-          val line =
-            List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
-              List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,
-              each, row.text).mkString("\t")
-          (line, profiled.getOrElse(Nil))
+            progress.echo(Library.format("retime: %8.2f s -> %s %s", row.seconds,
+              median.map(ms => Library.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
+            val line =
+              List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
+                List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,
+                each, row.text).mkString("\t")
+            (line, profiled.getOrElse(Nil))
+          }
         }
       (results.map(_._1), results.flatMap(_._2))
     }
@@ -112,6 +144,10 @@ object Retime {
   /* sessions already in output are skipped, so a long run can resume */
   def retime(options: Options, rows: List[Row], output: Path, profiles: Option[Path], dirs: List[Path],
       progress: Progress): Unit = {
+    if (!output.is_file && variants_mode) {
+      File.write(output, (List("session", "file", "offset", "census_s") ::: variant_fields ::: List("text"))
+        .mkString("", "\t", "\n"))
+    }
     if (!output.is_file) {
       File.write(output, "session\tfile\toffset\tcensus_s\tverdict\tmedian_ms\tcpu_ms\tgc_ms\truns\truns_ms\ttext\n")
     }

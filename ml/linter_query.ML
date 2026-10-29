@@ -8,6 +8,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
   linter_run  TEXT      run an edited copy of the lemma from the state before it
   linter_runs N A B     run lemma texts A and B N times each, in turn, B first every other
                         time; ms, ms2 are the medians, as are cpu, cpu2
+  linter_times_without N RUN_MS NAME M  `by M` N times with and N times without simproc NAME
   linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
                         cpu0, gc0 ... the medians of their cpu and gc, runs0 ... every run's ms
   linter_goal           describe the goal, for learning which methods close it
@@ -551,6 +552,37 @@ val _ =
           then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, each] else []
         end;
     in ("closes", maps medians (map_index I methods)) end);
+
+(*`by M` with and without simproc NAME, as `using [[simproc del: NAME]]` would: one untimed
+  run first (it forces lazy facts), then N rounds of both, the order alternating; ms0 ... are
+  with it, ms1 ... without, verdict0/1 the first run that did not close; RUN_MS limits each run*)
+fun simproc_rounds limit_ms n name text st =
+  let
+    val pre = Toplevel.proof_of st;
+    val proc = #2 (Simplifier.check_simproc (Proof.context_of pre) (name, Position.none));
+    val without = Proof.map_context (Raw_Simplifier.del_proc proc) pre;
+    val limit = Time.fromMilliseconds limit_ms;
+    fun run state = timed limit (run_on state text);
+    val _ = run pre;
+    fun round i = if i mod 2 = 1 then (run pre, run without) else swap (run without, run pre);
+  in map round (1 upto n) end;
+
+fun round_fields i runs =
+  let
+    val bad = filter (fn (res, _) => verdict res <> "closes") runs;
+    fun med name f = ms (name ^ string_of_int i) (median (map (Time.toMilliseconds o f o #2) runs));
+    val each = space_implode "," (map (string_of_int o Time.toMilliseconds o #elapsed o #2) runs);
+  in
+    ("verdict" ^ string_of_int i, (case bad of [] => "closes" | (res, _) :: _ => verdict res)) ::
+    (if null bad then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, ("runs" ^ string_of_int i, each)]
+     else [])
+  end;
+
+val _ =
+  register "linter_times_without" (fn _ => fn [n, run_ms, name, text] => fn st =>
+    let
+      val rounds = simproc_rounds (the (Int.fromString run_ms)) (the (Int.fromString n)) name text st;
+    in ("closes", round_fields 0 (map #1 rounds) @ round_fields 1 (map #2 rounds)) end);
 
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>

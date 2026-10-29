@@ -32,7 +32,7 @@ object Parent {
       using(db) { db =>
         val timings = Properties.uncompress(store.read_command_timings(db, session))
         timings.groupMapReduce(props => Properties.get(props, Markup.FILE).getOrElse(""))(
-          Markup.Elapsed.get)(_ + _)
+          Markup.Timing_Properties.Elapsed.get)(_ + _)
       })
   }
 
@@ -41,9 +41,11 @@ object Parent {
   final class Homes(structure: Sessions.Structure) {
     private val cache = Synchronized(Map.empty[String, Option[String]])
 
-    private def lookup(dir: JFile): Option[String] =
-      if (dir == null) None
-      else structure.session_directories.get(dir).orElse(lookup(dir.getParentFile))
+    private def lookup(dir: JFile | Null): Option[String] =
+      dir match {
+        case null => None
+        case d: JFile => structure.session_directories.get(d).orElse(lookup(d.getParentFile))
+      }
 
     def apply(file: String): Option[String] =
       cache.change_result { homes =>
@@ -75,7 +77,7 @@ object Parent {
 
 
   def is_distribution(info: Sessions.Info): Boolean =
-    info.dir.canonical_file.toPath.startsWith(Path.explode("~~").canonical_file.toPath)
+    info.dir.canonical_file.toPath.nn.startsWith(Path.explode("~~").canonical_file.toPath)
 
   /* parents that keep every current ancestor and do not import the session: sessions it imports
     already, or distribution sessions */
@@ -123,7 +125,7 @@ object Parent {
         val header = text.take(text.indexOf('+', text.indexOf('=')) + 1)
         val old = "=\\s*\"?" + java.util.regex.Pattern.quote(info.parent.getOrElse("")) + "\"?\\s*\\+"
         val edited = header.replaceFirst(old, java.util.regex.Matcher.quoteReplacement("= " + quote_name(parent) + " +"))
-        file + ":" + line + ": " + edited.replaceAll("\\s+", " ")
+        file + ":" + line + ": " + edited.nn.replaceAll("\\s+", " ")
       case _ => "session " + info.name + " = " + quote_name(parent) + " +"
     }
 
@@ -132,7 +134,7 @@ object Parent {
 
 
   def report(structure: Sessions.Structure, suggestions: List[Suggestion], min: Double, progress: Progress): Unit = {
-    def secs(t: Double): String = String.format(if (t < 10) "%.1f s" else "%.0f s", t)
+    def secs(t: Double): String = Library.format(if (t < 10) "%.1f s" else "%.0f s", t)
     for (s <- suggestions.sortBy(-_.saved) if s.parent.nonEmpty && s.saved >= min) {
       val info = structure(s.session)
       progress.echo(s.session + ": parent " + s.parent + " instead of " + info.parent.getOrElse("-") +
