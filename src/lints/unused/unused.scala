@@ -29,7 +29,7 @@ object Unused extends Lint {
       case Some(a) if !a.closes => Right((Nil, None))
       case Some(a) =>
         val budget = Time.ms((a.ms * options.real("linter_factor")).toLong max 1000L min timeout.ms)
-        new Search(lemma, answers, budget).run() match {
+        new Search(lemma, answers, budget, options.int("unused_ahead")).run() match {
           case Left(questions) => Left(questions)
           case Right(pieces) => timed(lemma, pieces, budget, answers, options)
         }
@@ -51,7 +51,7 @@ object Unused extends Lint {
     }
   }
 
-  private class Search(lemma: Lemma, answers: Pide.Answers, budget: Time) {
+  private class Search(lemma: Lemma, answers: Pide.Answers, budget: Time, ahead: Int) {
     def run(): Result = {
       val alone = lemma.pieces.map(p => p -> drop(List(p)))
       val missing = alone.map(_._2).filterNot(asked)
@@ -88,14 +88,23 @@ object Unused extends Lint {
     private def one_by_one(base: List[Piece], keep: List[Piece], rest: List[Piece]): Result =
       rest match {
         case Nil => Right(keep)
-        case p :: ps if (base ::: keep).exists(_.range.contains(p.range)) => one_by_one(base, keep, ps)
+        case p :: ps if inside(base ::: keep, p) => one_by_one(base, keep, ps)
         case p :: ps =>
-          val q = drop(base ::: keep ::: List(p))
-          answers.get(q.key) match {
-            case None => Left(List(q))
+          answers.get(drop(base ::: keep ::: List(p)).key) match {
+            case None => Left(guesses(base, keep, rest))
             case Some(a) => one_by_one(base, if (a.closes) keep :+ p else keep, ps)
           }
       }
+
+    /* the next questions of one_by_one, each as if the ones before it close: they are the questions
+      it asks anyway while pieces can go, so a lemma takes a round per needed piece, not per piece */
+    private def guesses(base: List[Piece], keep: List[Piece], rest: List[Piece]): List[Pide.Question] =
+      rest.foldLeft((keep, List.empty[Pide.Question])) {
+        case ((k, qs), p) if qs.length >= (ahead max 1) || inside(base ::: k, p) => (k, qs)
+        case ((k, qs), p) => (k :+ p, qs :+ drop(base ::: k ::: List(p)))
+      }._2
+
+    private def inside(pieces: List[Piece], p: Piece): Boolean = pieces.exists(_.range.contains(p.range))
   }
 
   /* the lemma with pieces deleted, re-run from the state before it */
