@@ -15,6 +15,7 @@ Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, T
                         profile arrives as a tracing message on the command
   linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
                         the fastest C (as an index) and its time, for the subgoals some C closes
+  linter_subgoal M I C  run `apply M`, then C on subgoal I alone, which it must close
   linter_used_rules M   run `by M`; rules are the simp rules, and the facts named in M, that its
                         proof used, as names that parse in the goal's context; subgoals counts
                         the goals before it
@@ -596,6 +597,13 @@ val _ =
           SOME (j, t) => [("sub" ^ string_of_int i, string_of_int j), ms ("ms" ^ string_of_int i) (Time.toMilliseconds t)]
         | NONE => []);
     in ("closes", ms "n" n :: maps subgoal (1 upto n)) end);
+
+val _ =
+  register "linter_subgoal" (fn limit => fn [first, i, text] => fn st =>
+    let
+      val after = apply_text first (Toplevel.proof_of st);
+      val (res, t) = timed limit (close_first text (Proof.prefer (the (Int.fromString i)) after));
+    in (verdict res, times t @ failure res) end);
 
 val _ =
   register "linter_used_rules" (fn limit => fn [text] => fn st =>
