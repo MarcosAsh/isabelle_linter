@@ -1,4 +1,5 @@
-/* linter_collect: for every `by` step, its goal and which methods close it how fast */
+/* The linter_collect tool: for every `by` step of a session, the features of its goal and which
+   methods close it how fast, as JSON lines for studying which method to try. */
 
 package isabelle.isabelle_linter
 
@@ -6,7 +7,7 @@ import isabelle._
 
 
 object Collect {
-  /* a `by` step and the methods tried on it: its own first, then faster_step's */
+  /* A `by` step and the methods tried on it: its own first, then faster_step's. */
   sealed case class Item(lemma: Lemma, step: Step) {
     val methods: List[String] = (step.methods :: Faster_Step.candidates(step)).distinct
 
@@ -17,33 +18,33 @@ object Collect {
 
     def tried(answers: Pide.Answers, method: String): Pide.Answer = answers(key("try:" + method))
 
-    def closing(answers: Pide.Answers): List[String] = methods.filter(m => tried(answers, m).closes)
+    def closing(answers: Pide.Answers): List[String] = methods.filter(method => tried(answers, method).closes)
   }
 
 
   /* questions */
 
-  /* the goal, and every method with the same limit; these may run in parallel */
+  /* The goal, and every method with the same limit; these may run in parallel. */
   def tries(item: Item, timeout: Time): List[Pide.Question] =
     item.question("linter_goal", "goal", Nil, timeout) ::
-      item.methods.map(m => item.question("linter_try", "try:" + m, List(m), timeout))
+      item.methods.map(method => item.question("linter_try", "try:" + method, List(method), timeout))
 
-  /* the methods that closed, re-timed one after another */
+  /* The methods that closed, re-timed one after another. */
   def timing(item: Item, answers: Pide.Answers, runs: Int, timeout: Time): List[Pide.Question] =
     item.closing(answers) match {
       case Nil => Nil
-      case ms => List(item.question("linter_times", "times", runs.toString :: ms, timeout))
+      case closing => List(item.question("linter_times", "times", runs.toString :: closing, timeout))
     }
 
   def sledgehammer(item: Item, timeout: Time): Pide.Question =
     item.question("linter_sledgehammer", "sledgehammer", List(""), timeout)
 
-  /* chunks of a few steps, so the timed runs barely compete */
+  /* Ask in chunks of a few steps, so that the timed runs barely compete. */
   def ask_in_chunks(checked: Pide.Checked, questions: List[List[Pide.Question]], size: Int,
       progress: Progress): Pide.Answers = {
     var answers: Pide.Answers = Map.empty
-    for (chunk <- questions.grouped(size); qs = chunk.flatten if qs.nonEmpty) {
-      answers ++= Pide.ask(checked.session, qs, progress)
+    for (chunk <- questions.grouped(size); chunk_questions = chunk.flatten if chunk_questions.nonEmpty) {
+      answers ++= Pide.ask(checked.session, chunk_questions, progress)
     }
     answers
   }
@@ -56,42 +57,42 @@ object Collect {
     val answers = Pide.ask(checked.session, batch.flatMap(tries(_, timeout)), progress)
     val times = ask_in_chunks(checked, batch.map(timing(_, answers, runs, timeout)), parallel, progress)
 
-    val sh_timeout = Time.seconds(options.real("collect_sledgehammer"))
-    val sh =
-      if (!checked.hol || sh_timeout.is_zero) Map.empty
-      else ask_in_chunks(checked, batch.map(i => List(sledgehammer(i, sh_timeout))), parallel, progress)
+    val sledgehammer_timeout = Time.seconds(options.real("collect_sledgehammer"))
+    val proofs =
+      if (!checked.hol || sledgehammer_timeout.is_zero) Map.empty
+      else ask_in_chunks(checked, batch.map(item => List(sledgehammer(item, sledgehammer_timeout))), parallel, progress)
 
-    answers ++ times ++ sh
+    answers ++ times ++ proofs
   }
 
 
   /* records */
 
-  /* numbers as numbers */
+  /* Numbers go into the JSON as numbers. */
   def value(s: String): Any = Value.Long.unapply(s).getOrElse(s)
 
-  /* the result message also carries its position */
+  /* The result message also carries its position, which is no feature of the goal. */
   val not_features: Set[String] =
     Set(Markup.INSTANCE, "verdict", Markup.SERIAL, Markup.ID, Markup.LABEL, Markup.OFFSET, Markup.END_OFFSET,
       Markup.FILE)
 
   def goal(answer: Pide.Answer): JSON.Object.T =
-    answer.props.filterNot(p => not_features(p._1)).map({ case (a, b) => a -> value(b) }).toMap
+    answer.props.collect({ case (name, text) if !not_features(name) => name -> value(text) }).toMap
 
   def tries_json(item: Item, answers: Pide.Answers): List[JSON.Object.T] = {
     val times = answers.get(item.key("times"))
     val closing = item.closing(answers)
-    for (m <- item.methods) yield {
-      val a = item.tried(answers, m)
-      val median = times.flatMap(_.long("ms" + closing.indexOf(m)))
-      JSON.Object("method" -> m, "verdict" -> a.verdict, "ms" -> a.ms) ++
-        median.map(t => "median_ms" -> t)
+    for (method <- item.methods) yield {
+      val tried = item.tried(answers, method)
+      val median = times.flatMap(_.long("ms" + closing.indexOf(method)))
+      JSON.Object("method" -> method, "verdict" -> tried.verdict, "ms" -> tried.ms) ++
+        median.map(ms => "median_ms" -> ms)
     }
   }
 
   def sledgehammer_json(answer: Pide.Answer): JSON.Object.T =
     JSON.Object("verdict" -> answer.verdict, "ms" -> answer.ms) ++
-      answer.get("method").map(m => "method" -> m)
+      answer.get("method").map(method => "method" -> method)
 
   def record(entry: String, item: Item, answers: Pide.Answers, options: Options): JSON.Object.T = {
     val lemma = item.lemma
@@ -106,11 +107,11 @@ object Collect {
       "runs" -> options.int("collect_runs"),
       "goal" -> goal(answers(item.key("goal"))),
       "tries" -> tries_json(item, answers)) ++
-      answers.get(item.key("sledgehammer")).map(a => "sledgehammer" -> sledgehammer_json(a))
+      answers.get(item.key("sledgehammer")).map(answer => "sledgehammer" -> sledgehammer_json(answer))
   }
 
 
-  /* one JSON line per step, a batch at a time */
+  /* One JSON line per step, written a batch at a time. */
   def collect_session(options: Options, session_name: String, output: Path, dirs: List[Path],
       progress: Progress): Unit =
     Pide.check(options, session_name, dirs, progress) { checked =>
@@ -121,13 +122,13 @@ object Collect {
       var done = 0
       for (batch <- items.grouped(options.int("collect_batch"))) {
         val answers = ask_batch(checked, batch, options, progress)
-        File.append(output, batch.map(i => JSON.Format(record(entry, i, answers, options)) + "\n").mkString)
+        File.append(output, batch.map(item => JSON.Format(record(entry, item, answers, options)) + "\n").mkString)
         done += batch.length
         progress.echo("collect: " + done + " of " + items.length + " steps")
       }
     }
 
-  /* the sessions of one AFP entry into one file; it only appears when all are done */
+  /* The sessions of one AFP entry go into one file, which only appears when all are done. */
   def collect(options: Options, sessions: List[String], output: Path, dirs: List[Path], progress: Progress): Unit =
     if (output.is_file) progress.echo("Skipping " + output.implode + ": already there")
     else {

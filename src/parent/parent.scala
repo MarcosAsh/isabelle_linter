@@ -1,4 +1,5 @@
-/* linter_parent: the parent session that saves the most re-checked theories, from the build logs */
+/* The linter_parent tool: for each session, the parent whose heap would hold the most of the
+   theories it checks again, by their times in the build logs. */
 
 package isabelle.isabelle_linter
 
@@ -8,7 +9,7 @@ import java.io.{File => JFile}
 
 
 object Parent {
-  /* a theory that is not in a parent heap is checked again by every session that imports it */
+  /* A theory that is not in a parent heap is checked again by every session that imports it. */
   sealed case class Suggestion(
     session: String,
     parent: String,
@@ -19,7 +20,7 @@ object Parent {
     new_heap: Boolean)
 
 
-  /* the stored command time of one session, summed per theory file */
+  /* The stored command time of one session, summed per theory file. */
   def read_log(store: Store, log_dir: Option[Path], session: String): Option[Map[String, Double]] = {
     val db =
       log_dir match {
@@ -28,8 +29,8 @@ object Parent {
           if (path.is_file) Some(SQLite.open_database(path)) else None
         case None => store.try_open_database(session)
       }
-    db.map(db =>
-      using(db) { db =>
+    db.map(opened =>
+      using(opened) { db =>
         val timings = Properties.uncompress(store.read_command_timings(db, session))
         timings.groupMapReduce(props => Properties.get(props, Markup.FILE).getOrElse(""))(
           Markup.Timing_Properties.Elapsed.get)(_ + _)
@@ -37,7 +38,7 @@ object Parent {
   }
 
 
-  /* the session whose directory holds a theory file */
+  /* The session whose directory holds a theory file. */
   final class Homes(structure: Sessions.Structure) {
     private val cache = Synchronized(Map.empty[String, Option[String]])
 
@@ -55,7 +56,7 @@ object Parent {
   }
 
 
-  /* the build log and the heap content of each session, read once */
+  /* The build log and the heap content of each session, read once. */
   final class Logs(structure: Sessions.Structure, store: Store, log_dir: Option[Path]) {
     private val logs = Synchronized(Map.empty[String, Option[Map[String, Double]]])
     private val heaps = Synchronized(Map.empty[String, Set[String]])
@@ -66,7 +67,7 @@ object Parent {
         (log, cache + (session -> log))
       }
 
-    /* the theory files in a session's heap: what it and its ancestors checked */
+    /* The theory files in a session's heap: what it and its ancestors checked. */
     def heap(session: String): Set[String] =
       heaps.value.getOrElse(session, {
         val files = structure.build_requirements(List(session)).flatMap(apply(_).getOrElse(Map.empty).keys).toSet
@@ -79,15 +80,15 @@ object Parent {
   def is_distribution(info: Sessions.Info): Boolean =
     info.dir.canonical_file.toPath.nn.startsWith(Path.explode("~~").canonical_file.toPath)
 
-  /* parents that keep every current ancestor and do not import the session: sessions it imports
-    already, or distribution sessions */
+  /* Parents that keep every current ancestor and do not import the session: sessions it imports
+     already, or distribution sessions. */
   def candidates(structure: Sessions.Structure, distribution: List[String], session: String): List[String] = {
     val ancestors = structure.build_requirements(List(session)).filterNot(_ == session).toSet
     val imported = structure.imports_requirements(List(session)).filterNot(_ == session)
-    (imported ::: distribution).distinct.filter { p =>
-      !ancestors(p) &&
-      ancestors.subsetOf(structure.build_requirements(List(p)).toSet) &&
-      !structure.imports_graph.all_preds(List(p)).contains(session)
+    (imported ::: distribution).distinct.filter { parent =>
+      !ancestors(parent) &&
+      ancestors.subsetOf(structure.build_requirements(List(parent)).toSet) &&
+      !structure.imports_graph.all_preds(List(parent)).contains(session)
     }
   }
 
@@ -101,14 +102,15 @@ object Parent {
     for (log <- logs(session)) yield {
       val foreign = log.filter({ case (file, _) => !homes(file).contains(session) })
       val savings =
-        for (p <- candidates(structure, distribution, session) if logs(p).isDefined) yield {
-          val heap = logs.heap(p)
-          p -> foreign.iterator.collect({ case (file, t) if heap(file) => t }).sum
+        for (candidate <- candidates(structure, distribution, session) if logs(candidate).isDefined) yield {
+          val heap = logs.heap(candidate)
+          candidate -> foreign.iterator.collect({ case (file, seconds) if heap(file) => seconds }).sum
         }
-      /* on a tie, the smaller heap */
-      val size = (p: String) => structure.build_requirements(List(p)).length
+      /* On a tie, the smaller heap wins. */
+      val size = (candidate: String) => structure.build_requirements(List(candidate)).length
       val (parent, saved) =
-        savings.filter(_._2 > 0).maxByOption({ case (p, t) => (t, -size(p)) }).getOrElse(("", 0.0))
+        savings.filter(_._2 > 0).maxByOption({ case (candidate, seconds) => (seconds, -size(candidate)) })
+          .getOrElse(("", 0.0))
       val chain = if (parent.isEmpty) Set.empty[String] else structure.build_requirements(List(parent)).toSet
       Suggestion(session, parent, log.values.sum, foreign.values.sum, saved,
         structure(session).imports.filter(chain),
@@ -134,14 +136,17 @@ object Parent {
 
 
   def report(structure: Sessions.Structure, suggestions: List[Suggestion], min: Double, progress: Progress): Unit = {
-    def secs(t: Double): String = Library.format(if (t < 10) "%.1f s" else "%.0f s", t)
-    for (s <- suggestions.sortBy(-_.saved) if s.parent.nonEmpty && s.saved >= min) {
-      val info = structure(s.session)
-      progress.echo(s.session + ": parent " + s.parent + " instead of " + info.parent.getOrElse("-") +
-        " saves " + secs(s.saved) + " of " + secs(s.foreign) + " re-checked (" + secs(s.stored) + " stored)")
-      progress.echo("  " + root_edit(info, s.parent))
-      if (s.redundant.nonEmpty) progress.echo("  now ancestors, may leave `sessions`: " + commas(s.redundant))
-      if (s.new_heap) progress.echo("  " + s.parent + " will store a heap")
+    def secs(seconds: Double): String = Library.format(if (seconds < 10) "%.1f s" else "%.0f s", seconds)
+    for (suggestion <- suggestions.sortBy(-_.saved) if suggestion.parent.nonEmpty && suggestion.saved >= min) {
+      val info = structure(suggestion.session)
+      progress.echo(suggestion.session + ": parent " + suggestion.parent + " instead of " +
+        info.parent.getOrElse("-") + " saves " + secs(suggestion.saved) + " of " + secs(suggestion.foreign) +
+        " re-checked (" + secs(suggestion.stored) + " stored)")
+      progress.echo("  " + root_edit(info, suggestion.parent))
+      if (suggestion.redundant.nonEmpty) {
+        progress.echo("  now ancestors, may leave `sessions`: " + commas(suggestion.redundant))
+      }
+      if (suggestion.new_heap) progress.echo("  " + suggestion.parent + " will store a heap")
     }
     val stored = suggestions.map(_.stored).sum
     val foreign = suggestions.map(_.foreign).sum
@@ -154,9 +159,9 @@ object Parent {
 
   def write_tsv(path: Path, structure: Sessions.Structure, suggestions: List[Suggestion]): Unit = {
     val lines =
-      for (s <- suggestions)
-      yield List(s.session, structure(s.session).parent.getOrElse(""), s.parent, s.stored, s.foreign, s.saved,
-        s.new_heap).mkString("\t")
+      for (suggestion <- suggestions)
+      yield List(suggestion.session, structure(suggestion.session).parent.getOrElse(""), suggestion.parent,
+        suggestion.stored, suggestion.foreign, suggestion.saved, suggestion.new_heap).mkString("\t")
     File.write(path, ("session\tparent\tnew_parent\tstored\tforeign\tsaved\tnew_heap" :: lines).mkString("", "\n", "\n"))
   }
 
@@ -203,11 +208,11 @@ Usage: isabelle linter_parent [OPTIONS] [SESSIONS]
         val names =
           (more_args ::: Census.selected(options, dirs.toList, select_dirs.toList)) match {
             case Nil => structure.build_topological_order.filter(logs(_).isDefined)
-            case ss => structure.check_sessions(ss); ss.distinct
+            case sessions => structure.check_sessions(sessions); sessions.distinct
           }
 
         val homes = new Homes(structure)
-        val distribution = structure.build_topological_order.filter(s => is_distribution(structure(s)))
+        val distribution = structure.build_topological_order.filter(session => is_distribution(structure(session)))
         val suggestions = names.flatMap(suggest(structure, distribution, logs, homes, _))
         report(structure, suggestions, min, new Console_Progress())
         output.foreach(write_tsv(_, structure, suggestions))
