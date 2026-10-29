@@ -1,4 +1,5 @@
-/* linter_census: where checking time goes, read from the build logs */
+/* The linter_census tool: where a build's checking time went, read from the command timings that
+   isabelle build stored in its log databases. */
 
 package isabelle.isabelle_linter
 
@@ -6,13 +7,16 @@ import isabelle._
 
 
 object Census {
-  /* one slow command: build_timing_threshold decides which are stored */
+  /* One stored command timing; build_timing_threshold decides which are stored. */
   sealed case class Timing(session: String, file: String, offset: Int, name: String, seconds: Double) {
     def text: String = Census.text_at(file, offset)
   }
 
+  /* A session's total CPU time and its stored command timings. */
+  sealed case class Session_Timings(name: String, cpu: Double, timings: List[Timing])
 
-  /* the sessions that have a log database */
+
+  /* The sessions that have a log database. */
   def logged_sessions(store: Store): List[String] =
     (for {
       dir <- store.input_dirs
@@ -20,12 +24,12 @@ object Census {
       file <- File.read_dir(log) if file.endsWith(".db")
     } yield file.stripSuffix(".db")).distinct.sorted
 
-  /* the sessions defined in select_dirs, as isabelle build -D */
+  /* The sessions defined in select_dirs, as with isabelle build -D. */
   def selected(options: Options, dirs: List[Path], select_dirs: List[Path]): List[String] =
     if (select_dirs.isEmpty) Nil
     else Sessions.load_structure(options, dirs = dirs, select_dirs = select_dirs).build_selection(Sessions.Selection())
 
-  def read_session(store: Store, session: String): (Double, List[Timing]) =
+  def read_session(store: Store, session: String): Session_Timings =
     using(store.open_database(session)) { db =>
       val cpu = store.read_session_timing(db, session).ml_timing.cpu.seconds
       val timings =
@@ -35,27 +39,27 @@ object Census {
           val offset = Properties.get(props, Markup.OFFSET).map(Value.Int.parse).getOrElse(1)
           Timing(session, file, offset, Markup.Name.get(props), Markup.Timing_Properties.Elapsed.get(props))
         }
-      (cpu, timings)
+      Session_Timings(session, cpu, timings)
     }
 
 
-  /* the command text, from its symbol offset */
+  /* The command text, from its symbol offset; each file is read once. */
 
   private val sources = Synchronized(Map.empty[String, Option[Vector[Symbol.Symbol]]])
 
   def text_at(file: String, offset: Int): String = {
     val symbols =
       sources.change_result { cache =>
-        val syms = cache.getOrElse(file, {
+        val read = cache.getOrElse(file, {
           val path = Path.explode(file).expand
           if (path.is_file) Some(Symbol.explode(File.read(path)).toVector) else None
         })
-        (syms, cache + (file -> syms))
+        (read, cache + (file -> read))
       }
     symbols match {
       case None => "?"
-      case Some(syms) =>
-        val text = syms.slice(offset - 1, offset + 300).mkString
+      case Some(symbols) =>
+        val text = symbols.slice(offset - 1, offset + 300).mkString
         Library.trim_line(text.takeWhile(_ != '\n')).take(160)
     }
   }
@@ -66,14 +70,14 @@ object Census {
   def share(part: Double, all: Double): String =
     if (all == 0) "-" else Library.format("%.1f%%", 100 * part / all)
 
-  /* a theory outside every heap is checked again by each session that imports it; keep each
-    command once, with its lowest time, the one least distorted by load */
-  def distinct(sessions: List[(String, Double, List[Timing])]): List[Timing] =
-    sessions.flatMap(_._3).groupBy(t => (t.file, t.offset)).values.map(_.minBy(_.seconds)).toList
+  /* A theory outside every heap is checked again by each session that imports it. Keep each
+     command once, with its lowest time, which load distorts least. */
+  def distinct(sessions: List[Session_Timings]): List[Timing] =
+    sessions.flatMap(_.timings).groupBy(timing => (timing.file, timing.offset)).values.map(_.minBy(_.seconds)).toList
 
-  def report(sessions: List[(String, Double, List[Timing])], top: Int, progress: Progress): Unit = {
-    val cpu = sessions.map(_._2).sum
-    val all = sessions.map(_._3.length).sum
+  def report(sessions: List[Session_Timings], top: Int, progress: Progress): Unit = {
+    val cpu = sessions.map(_.cpu).sum
+    val all = sessions.map(_.timings.length).sum
     val timings = distinct(sessions).sortBy(-_.seconds)
     val stored = timings.map(_.seconds).sum
 
@@ -82,9 +86,10 @@ object Census {
       share(stored, cpu) + " of CPU)")
 
     progress.echo("\nby command:")
-    for ((name, ts) <- timings.groupBy(_.name).toList.sortBy(-_._2.map(_.seconds).sum).take(12)) {
-      val t = ts.map(_.seconds).sum
-      progress.echo(Library.format("  %-14s %7.0f s  %6s of CPU  %5d commands", name, t, share(t, cpu), ts.length))
+    for ((name, commands) <- timings.groupBy(_.name).toList.sortBy(-_._2.map(_.seconds).sum).take(12)) {
+      val seconds = commands.map(_.seconds).sum
+      progress.echo(Library.format("  %-14s %7.0f s  %6s of CPU  %5d commands", name, seconds, share(seconds, cpu),
+        commands.length))
     }
 
     progress.echo("\nconcentration:")
@@ -93,16 +98,17 @@ object Census {
     }
 
     progress.echo("\nslowest:")
-    for (t <- timings.take(top)) {
-      progress.echo(Library.format("  %7.2f s  %-24s %s", t.seconds, t.session, t.text))
+    for (timing <- timings.take(top)) {
+      progress.echo(Library.format("  %7.2f s  %-24s %s", timing.seconds, timing.session, timing.text))
     }
   }
 
-  def write_tsv(path: Path, sessions: List[(String, Double, List[Timing])]): Unit = {
+  def write_tsv(path: Path, sessions: List[Session_Timings]): Unit = {
     val clean = (s: String) => s.replace('\t', ' ').nn
     val lines =
-      for (t <- distinct(sessions).sortBy(t => (t.session, t.file, t.offset)))
-      yield List(t.session, t.file, t.offset.toString, t.name, t.seconds.toString, clean(t.text)).mkString("\t")
+      for (timing <- distinct(sessions).sortBy(timing => (timing.session, timing.file, timing.offset)))
+      yield List(timing.session, timing.file, timing.offset.toString, timing.name, timing.seconds.toString,
+        clean(timing.text)).mkString("\t")
     File.write(path, ("session\tfile\toffset\tcommand\tseconds\ttext" :: lines).mkString("", "\n", "\n"))
   }
 
@@ -142,15 +148,11 @@ Usage: isabelle linter_census [OPTIONS] [SESSIONS]
         val logged = logged_sessions(store)
         val names = (getopts(args) ::: selected(options, dirs.toList, select_dirs.toList)) match {
           case Nil => logged
-          case ss => ss.distinct.filter(logged.contains)
+          case sessions => sessions.distinct.filter(logged.contains)
         }
 
         val progress = new Console_Progress()
-        val sessions =
-          for (name <- names) yield {
-            val (cpu, timings) = read_session(store, name)
-            (name, cpu, timings)
-          }
+        val sessions = names.map(read_session(store, _))
 
         report(sessions, top, progress)
         output.foreach(write_tsv(_, sessions))
