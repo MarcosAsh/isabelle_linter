@@ -1,16 +1,12 @@
 (*  Title:      isabelle_linter/ml/linter_sledgehammer.ML
 
-Print function for HOL sessions. Args: INSTANCE, TIMEOUT_MS, then
-
-  linter_sledgehammer PROVERS   run Sledgehammer on the goal; method is the proof it found
-
-PROVERS is space-separated, empty for Sledgehammer's defaults.
+Print function for HOL sessions that runs Sledgehammer on a step's goal, for linter_collect.
 *)
 
 structure Linter_Sledgehammer =
 struct
 
-(*half the time for the provers, the rest for preplay*)
+(*Half the time goes to the provers, the rest to preplay.*)
 fun params thy limit provers =
   Sledgehammer_Commands.default_params thy
     ([("timeout", Value.print_real (Time.toReal limit / 2.0)), ("isar_proofs", "false"),
@@ -25,7 +21,7 @@ fun played (meth, (Sledgehammer_Proof_Methods.Played _, facts)) =
       SOME (text meth (facts |> filter not_chained |> map (Pretty.pure_string_of o fst)))
   | played _ = NONE;
 
-(*tactic provers like simp have nothing to preplay: their method is the proof*)
+(*Tactic provers like simp have nothing to preplay: their method is the proof.*)
 fun method (Sledgehammer.SH_Some ({preferred_methss = (meth, []), used_facts, ...}, [])) =
       SOME (text meth (used_facts |> filter not_chained |> map fst))
   | method (Sledgehammer.SH_Some (_, preplays)) = get_first played preplays
@@ -38,6 +34,8 @@ fun sledgehammer limit provers state () =
         Sledgehammer_Prover.Normal (SOME (K ())) 1 Sledgehammer_Fact.no_fact_override state;
   in method outcome end;
 
+(*linter_sledgehammer PROVERS: Sledgehammer with the space-separated PROVERS, or its defaults if
+  empty; method is the proof it found.*)
 val _ =
   Linter_Query.register "linter_sledgehammer" (fn limit => fn [provers] => fn st =>
     let val (res, t) = Linter_Query.timed limit (sledgehammer limit provers (Toplevel.proof_of st)) in

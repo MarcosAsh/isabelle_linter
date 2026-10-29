@@ -1,16 +1,11 @@
 (*  Title:      isabelle_linter/ml/linter_simproc.ML
 
-Print function for HOL sessions: the cost of the simproc datatype_no_proper_subterm on a step.
-
-  linter_simproc_variants N RUN_MS M  run `by M` once untimed, then N rounds of three variants
-      in rotating order: 0 as is, 1 without the simproc, 2 with Cached_No_Proper_Subterm in its
-      place; then once with the simproc wrapped in a counter. verdictI, msI, cpuI, gcI, runsI as
-      in linter_times_without; calls, hits (calls that rewrote), inside_ms (wall time inside the
-      simproc) and step_ms (that run's wall time)
-
-RUN_MS limits each run.
+Print function for HOL sessions that measures what the simproc datatype_no_proper_subterm costs a
+step, for linter_retime with RETIME_WITHOUT.
 *)
 
+(*HOL's Datatype_Simprocs.no_proper_subterm_proc, caching each type's size equations and
+  constructors.*)
 structure Cached_No_Proper_Subterm =
 struct
 
@@ -32,7 +27,7 @@ fun mk_ctor T_names t =
 fun ctors_of (sugar : BNF_FP_Def_Sugar.fp_sugar) T_names =
   map (Thm.concl_of #> Logic.dest_equals #> fst #> mk_ctor T_names) (#ctr_defs (#fp_ctr_sugar sugar));
 
-(*size equations and the constructors of the type and its mutual types*)
+(*The size equations and the constructors of the type and its mutual types.*)
 fun lookup ctxt T_name =
   (case (BNF_FP_Def_Sugar.fp_sugar_of ctxt T_name, BNF_LFP_Size.size_of ctxt T_name) of
     (SOME sugar, SOME (_, (_, size_eqs, _))) =>
@@ -87,10 +82,10 @@ fun proc cache ctxt ct =
   end
   handle CTERM _ => NONE | TERM _ => NONE | TYPE _ => NONE | THM _ => NONE;
 
-(*the pattern's variables must be schematic: a proof context may fix 'a, x or y*)
+(*The pattern's variables must be schematic, but a proof context may fix 'a, x or y.*)
 fun global ctxt = Proof_Context.init_global (Proof_Context.theory_of ctxt);
 
-(*a fresh instance has an empty cache: make one per proof attempt*)
+(*A fresh instance has an empty cache, so make one per proof attempt.*)
 fun simproc ctxt =
   let val cache = Synchronized.var "no_proper_subterm" Symtab.empty in
     Simplifier.make_simproc (global ctxt)
@@ -113,11 +108,15 @@ fun counting_simproc ctxt counter =
       let
         val start = Time.now ();
         val res = Datatype_Simprocs.no_proper_subterm_proc ctxt ct;
-        val t = Time.now () - start;
+        val elapsed = Time.now () - start;
         val hit = if is_some res then 1 else 0;
-      in Synchronized.change counter (fn (n, k, d) => (n + 1, k + hit, d + t)); res end,
+      in
+        Synchronized.change counter (fn (calls, hits, inside) => (calls + 1, hits + hit, inside + elapsed));
+        res
+      end,
      identifier = []};
 
+(*The state without the simproc, and a function that puts another simproc in its place.*)
 fun states pre =
   let
     val ctxt = Proof.context_of pre;
@@ -136,7 +135,7 @@ fun variants limit n text st =
     val (without, replaced) = states pre;
     fun run state = Linter_Query.timed limit (Linter_Query.run_on state text);
     val _ = run pre;
-    (*a fresh cache per run, as a fresh simproc instance per proof would have*)
+    (*A fresh cache per run, as a fresh simproc instance per proof would have.*)
     fun round i =
       rotate (i mod 3 + 1)
         (fn () => run pre, fn () => run without, fn () => run (replaced Cached_No_Proper_Subterm.simproc))
@@ -155,6 +154,8 @@ fun variants limit n text st =
      ("counted_verdict", Linter_Query.verdict res)]
   end;
 
+(*linter_simproc_variants N RUN_MS M: `by M` once untimed, then N rounds of variant 0 as is, 1
+  without the simproc and 2 with Cached_No_Proper_Subterm, then once counting the simproc's calls.*)
 val _ =
   Linter_Query.register "linter_simproc_variants" (fn _ => fn [n, run_ms, text] => fn st =>
     ("closes",
