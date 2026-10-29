@@ -15,6 +15,9 @@ public option linter_factor : real = 5
 public option unused_runs : int = 3
   -- "unused: the lemma with and without the fix is timed this many times; medians are compared"
 
+public option unused_ahead : int = 8
+  -- "unused: when pieces must go one at a time, ask this many at once, each as if the ones before it can go"
+
 public option unused_imports_builds : int = 10
   -- "unused_imports: builds of the copy after the one with every proposed removal; removals not tried by then stay"
 
