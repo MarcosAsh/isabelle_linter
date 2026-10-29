@@ -1,53 +1,22 @@
 (*  Title:      isabelle_linter/ml/linter_query.ML
 
-Print functions that src/core/pide.scala attaches as overlays. Args: INSTANCE, TIMEOUT_MS, then
-
-  linter_try  METHODS   run `by METHODS` on the goal
-  linter_time N A B     run `by A` and `by B` N times each; ms, ms2 are the medians, as are
-                        cpu, cpu2 and gc, gc2
-  linter_run  TEXT      run an edited copy of the lemma from the state before it
-  linter_runs N A B     run lemma texts A and B N times each, in turn, B first every other
-                        time; ms, ms2 are the medians, as are cpu, cpu2
-  linter_times_without N RUN_MS NAME M  `by M` N times with and N times without simproc NAME
-  linter_times N M...   run each `by M` N times; ms0, ms1 ... are the medians of those that close,
-                        cpu0, gc0 ... the medians of their cpu and gc, runs0 ... every run's ms
-  linter_goal           describe the goal, for learning which methods close it
-  linter_profile M      run `by M` once under Poly/ML's time profiler for this thread; the
-                        profile arrives as a tracing message on the command
-  linter_subgoals M C...  run `apply M`, then try each C on each subgoal alone; sub1, ms1 ... are
-                        the fastest C (as an index) and its time, for the subgoals some C closes
-  linter_subgoal M I C  run `apply M`, then C on subgoal I alone, which it must close
-  linter_used_rules M   run `by M`; rules are the simp rules, and the facts named in M, that its
-                        proof used, as names that parse in the goal's context; subgoals counts
-                        the goals before it
-  linter_imports REF... on a theory's last command: uses are the other theories whose theorems
-                        its facts' proofs use, that declared the constants, types, classes and
-                        type instances its facts and constants mention, or the entities REF
-                        ("kind name", from the text's markup); context is "theory facts simps
-                        consts types classes" for each theory in its context, joined by ";"
-  linter_names A B...   run texts A, B1 ... from the state; per Bi: oki, msi, missingi, differi, reorderedi
-  linter_used_members M F...  run `by M`; used0, used1 ... are the names of the theorems of
-                        each fact F that its proof used, all0, all1 ... the names of all of
-                        them; "-" for none, "*" when a theorem has no global name
-  linter_try_del M F... run `by M` with the theorems of the facts F deleted from the simpset
-
-Times are wall-clock ms. cpu and gc count the whole process, so they only mean something
-when a question runs alone. A question cancelled while it runs answers "interrupted", with
-its time so far.
+Print functions that src/core/pide.scala attaches to commands as overlays, to ask the prover
+questions about one lemma or step; each takes INSTANCE and TIMEOUT_MS before its own arguments.
 *)
 
 structure Linter_Query =
 struct
 
-(*physical: a plain timeout is postponed by GC time, so under heap pressure it can run for far
-  longer than its limit*)
+(** running a step or a lemma **)
+
+(*Physical: a plain timeout is postponed by GC time, so under heap pressure it runs far too long.*)
 fun timed limit f =
   let
     val start = Timing.start ();
     val res = Exn.result (Timeout.apply_physical limit f) ();
   in (res, Timing.result start) end;
 
-(*a timeout must never count as a failure*)
+(*A timeout must never count as a failure.*)
 fun verdict (Exn.Res _) = "closes"
   | verdict (Exn.Exn exn) =
       if Exn.is_interrupt_proper exn then Exn.reraise exn
@@ -56,7 +25,7 @@ fun verdict (Exn.Res _) = "closes"
           Timeout.TIMEOUT _ => "timeout"
         | _ => if String.isSubstring "Timeout" (Runtime.exn_message exn) then "timeout" else "fails");
 
-(*why a question failed, so that the log tells an interrupted proof from one that does not work*)
+(*Why a question failed, so that the log tells an interrupted proof from one that does not work.*)
 fun failure (res as Exn.Exn exn) =
       if verdict res <> "fails" then []
       else
@@ -73,7 +42,7 @@ fun parse_methods thy text =
     | NONE => error ("Cannot parse proof methods " ^ quote text))
   end;
 
-(*a toplevel goal is at the bottom of the proof stack*)
+(*A toplevel goal is at the bottom of the proof stack.*)
 fun run_on pre text () =
   let val methods = parse_methods (Proof.theory_of pre) text in
     if can (Proof.assert_bottom true) pre
@@ -81,12 +50,12 @@ fun run_on pre text () =
     else ignore (Proof.local_terminal_proof methods pre)
   end;
 
-(*a theory command in the text starts from this theory*)
+(*A theory command in the text starts from this theory.*)
 fun init_theory thy () = {skip_theory = false, theory = thy};
 
 fun run_by st = run_on (Toplevel.proof_of st);
 
-(*no position: markup would go into the theory; forked proofs must finish too*)
+(*No position, or the markup would go into the theory; forked proofs must finish too.*)
 fun run_state st0 text () =
   let
     val thy = Toplevel.theory_of st0;
@@ -109,14 +78,15 @@ fun apply_text text state =
 
 fun nsubgoals state = Thm.nprems_of (#goal (Proof.goal state));
 
-(*restricted to the first subgoal, which it must close*)
+(*Restricted to the first subgoal, which it must close.*)
 fun close_first text state () =
   let val n = nsubgoals state in
     if nsubgoals (apply_text ("(" ^ text ^ ")[1]") state) = n - 1 then ()
     else error "Subgoal not closed"
   end;
 
-(*each later try only gets the best time so far; under 1 ms a timeout has no limit at all*)
+(*The index and time of the fastest closer. Each try gets only the best time so far, but at least
+  1 ms, as a smaller limit is no limit at all.*)
 fun fastest limit closers state =
   fold (fn (i, text) => fn best =>
     let
@@ -124,29 +94,28 @@ fun fastest limit closers state =
         (case best of SOME (_, t) => Time.min (limit, t) | NONE => limit)
         |> curry Time.max (Time.fromMilliseconds 1);
       val (res, t) = timed budget (close_first text state);
-    in
-      if verdict res = "closes" andalso (case best of SOME (_, b) => #elapsed t < b | NONE => true)
-      then SOME (i, #elapsed t) else best
-    end) (map_index I closers) NONE;
+      val faster = (case best of SOME (_, b) => #elapsed t < b | NONE => true);
+    in if verdict res = "closes" andalso faster then SOME (i, #elapsed t) else best end)
+  (map_index I closers) NONE;
 
 
 (* used rules *)
 
-(*like `by M1 M2`, but keeping the finished goal*)
+(*Like `by M1 M2`, but keeping the finished goal.*)
 fun finish_by (m1, m2) state =
   Proof.proof (SOME m1) state |> Seq.the_result ""
   |> (case m2 of SOME m => Proof.apply_end m #> Seq.the_result "" | NONE => I)
   |> Proof.apply_end (Method.finish_text (NONE, true), Position.no_range) |> Seq.the_result ""
   |> Proof.goal |> #goal;
 
-(*the shortest name that still means this fact here*)
+(*The shortest name that still means this fact here.*)
 fun extern_fact ctxt name =
   let
     val space = Facts.space_of (Proof_Context.facts_of_fact ctxt name);
     val xname = Name_Space.extern ctxt space name;
   in if Name_Space.intern space xname = name then SOME xname else NONE end;
 
-(*named theorems the proof depends on, stopping at each; forked proofs are joined first*)
+(*The named theorems the proof depends on, stopping at each; forked proofs are joined first.*)
 fun used_rules st text () =
   let
     val state = Toplevel.proof_of st;
@@ -178,10 +147,11 @@ fun spaces st =
      Consts.space_of (Sign.consts_of thy)]
   end;
 
+(*The names of space that space0 lacks.*)
 fun new_names space0 space = filter_out (Symtab.defined (Symtab.make_set (Name_Space.get_names space0)))
   (Name_Space.get_names space);
 
-(*as a's context writes them*)
+(*The names of st_a that st_b lacks, as st_a's context writes them.*)
 fun missing st_a st_b =
   let val ctxt = Toplevel.context_of st_a in
     maps (fn (a, b) => map (Name_Space.extern ctxt a) (new_names b a)) (spaces st_a ~~ spaces st_b)
@@ -195,7 +165,7 @@ fun fact_tables st =
 fun props st facts name =
   Facts.lookup (Context.Proof (Toplevel.context_of st)) facts name |> Option.map (map Thm.prop_of o #thms);
 
-(*"differ": other theorem; "reordered": same facts in another order*)
+(*The facts of st_a, new since st0, whose theorems differ in st_b, or are the same in another order.*)
 fun changed st0 st_a st_b =
   let
     val ctxt = Toplevel.context_of st_a;
@@ -225,6 +195,7 @@ fun eval_fact ctxt text =
     | NONE => error ("Cannot parse fact " ^ quote text))
   end;
 
+(*The name (name, i) as written here, if it denotes thm.*)
 fun denotes ctxt thm (name, i) =
   (case extern_fact ctxt name of
     SOME xname =>
@@ -237,7 +208,7 @@ fun denotes ctxt thm (name, i) =
       end
   | NONE => NONE);
 
-(*`lemmas defs = a_def b_def` renames its theorems: defs(2), a_def*)
+(*`lemmas defs = a_def b_def` renames its theorems: defs(2), a_def.*)
 fun names_below thy thm =
   let
     fun down 0 _ = []
@@ -250,7 +221,7 @@ fun names_below thy thm =
           | _ => []);
   in down 5 thm end;
 
-(*global identity and most specific name; a note only gives a hint like local.simps(1)*)
+(*Global identity and most specific name; a note only gives a hint like local.simps(1).*)
 fun global_name ctxt thm =
   let val thy = Proof_Context.theory_of ctxt in
     (case Global_Theory.lookup_thm thy thm of
@@ -264,6 +235,8 @@ fun global_name ctxt thm =
 fun print_names [] = "-"
   | print_names names = space_implode " " (distinct (op =) names);
 
+(*The names of the fact's theorems that the proof used, and of all of them; "*" if one has no
+  global name.*)
 fun used_of ctxt deps text =
   let
     val members = map (global_name ctxt) (eval_fact ctxt text);
@@ -310,7 +283,7 @@ fun head t =
   | Var _ => "var"
   | _ => "other");
 
-(*in every goal, so they say nothing*)
+(*These are in every goal, so they say nothing.*)
 val noise = ["Pure.all", "Pure.imp", "HOL.Trueprop", "prop"];
 
 fun consts t = subtract (op =) noise (Term.add_const_names t []);
@@ -337,7 +310,7 @@ fun subgoal_features ctxt facts goal t =
    count "local_facts" (local_facts ctxt),
    ("goal", Pretty.pure_string_of (Syntax.pretty_term ctxt t))];
 
-(*the first subgoal; the goal as text so features can be recomputed later*)
+(*The first subgoal, with the goal as text so that features can be computed again later.*)
 fun goal_features state =
   let val {context = ctxt, facts, goal} = Proof.goal state in
     (case Thm.prems_of goal of
@@ -348,12 +321,12 @@ fun goal_features state =
 
 (* imports *)
 
-(*the theory that declared name, if the space knows it*)
+(*The theory that declared name, if the space knows it.*)
 fun entry_theory space name = try (Name_Space.theory_name {long = true} space) name;
 
 fun facts_space thy = Facts.space_of (Global_Theory.facts_of thy);
 
-(*the name spaces of the entity kinds that markup refers to; other kinds are ignored*)
+(*The name spaces of the entity kinds that markup refers to; other kinds are ignored.*)
 fun kind_space thy kind =
   AList.lookup (op =)
     [(Markup.constantN, Sign.const_space), (Markup.type_nameN, Sign.type_space),
@@ -369,12 +342,12 @@ fun own_thms thy =
   Facts.fold_static (fn (a, ths) => own thy (facts_space thy) a ? append ths)
     (Global_Theory.facts_of thy) [];
 
-(*constants with their types, and abbreviations with what they stand for*)
+(*Constants with their types, and abbreviations with what they stand for.*)
 fun own_const_terms thy =
   #constants (Consts.dest (Sign.consts_of thy))
   |> maps (fn (c, (T, rhs)) => if own thy (Sign.const_space thy) c then Const (c, T) :: the_list rhs else []);
 
-(*the theories of the theorems that derivations use, looking through those of thy itself*)
+(*The theories of the theorems that derivations use, looking through those of thy itself.*)
 fun proof_theories thy thms =
   let
     val name = Context.theory_long_name thy;
@@ -397,14 +370,14 @@ fun term_names ts =
    fold (Term.fold_types (Term.fold_atyps_sorts (fn (_, S) => fold add_key S))) ts Symtab.empty
    |> Symtab.keys);
 
-(*a type instance counts for each class that a mentioned constant or type variable asks for, except
-  the default sort, which every type has (in HOL)*)
+(*A type instance counts for each class that a mentioned constant or type variable asks for,
+  except the default sort, which every type has in HOL.*)
 fun arity_theories thy tycons classes =
   let val all = subtract (op =) (Sign.defaultS thy) (Sign.complete_sort thy classes) in
     maps (fn a => maps (fn c => Thm.theory_names_of_arity {long = true} thy (a, c)) all) tycons
   end;
 
-(*the theories that declared the constants, types and classes of ts, and the instances they need*)
+(*The theories that declared the constants, types and classes of ts, and the instances they need.*)
 fun term_theories thy ts =
   let
     val (consts, types, sorts) = term_names ts;
@@ -425,8 +398,8 @@ fun ref_theories thy refs =
   refs |> map_filter (fn (kind, name) =>
     Option.mapPartial (fn space => entry_theory space name) (kind_space thy kind));
 
-(*the constants and types the text refers to, as terms, for their instances; a class parameter's
-  class is in its constraint, not its type*)
+(*The constants and types the text refers to, as terms, for their instances; a class parameter's
+  class is in its constraint, not its type.*)
 fun ref_terms thy refs =
   refs |> map_filter (fn (kind, name) =>
     if kind = Markup.constantN then
@@ -434,6 +407,8 @@ fun ref_terms thy refs =
     else if kind = Markup.type_nameN then SOME (Free ("x", Type (name, [])))
     else NONE);
 
+(*The other theories whose theorems thy's proofs use, that declared what its facts and constants
+  mention, or that declared the entities REF ("kind name") the text refers to.*)
 fun uses thy texts =
   let
     val thms = own_thms thy;
@@ -444,7 +419,8 @@ fun uses thy texts =
     |> distinct (op =) |> remove (op =) (Context.theory_long_name thy)
   end;
 
-(*per theory, how many names of each space are its own; simp rules by the names of their facts*)
+(*For each theory in the context, "theory facts simps consts types classes", joined by ";":
+  how many names of each space are its own, with simp rules by the names of their facts.*)
 fun context_counts thy =
   let
     fun tally i space names =
@@ -468,16 +444,45 @@ fun context_counts thy =
   end;
 
 
+
+(** answers **)
+
 fun output instance verdict props =
   Output.result ((Markup.instanceN, instance) :: ("verdict", verdict) :: props) [verdict];
 
 fun ms name n = (name, string_of_int n);
 
+(*Wall-clock ms; cpu and gc count the whole process, so they only mean something for a question
+  asked alone.*)
 fun times ({elapsed, cpu, gc}: Timing.timing) =
   map (fn (name, t) => ms name (Time.toMilliseconds t)) [("ms", elapsed), ("cpu", cpu), ("gc", gc)];
 
-(*cancelled from outside (overlay removed, or every task cancelled when the heap runs out): say so
-  before passing the interrupt on, so that the question is not just unanswered*)
+(*Pairs of runs, of A and B, close if every run closes.*)
+fun all_close runs = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
+
+(*For each field, the median over the runs of A, then of B as field2.*)
+fun pair_medians fields (runs: ((string * Timing.timing) * (string * Timing.timing)) list) =
+  maps (fn (name, f) =>
+    [ms name (median (map (Time.toMilliseconds o f o #2 o #1) runs)),
+     ms (name ^ "2") (median (map (Time.toMilliseconds o f o #2 o #2) runs))]) fields;
+
+(*The medians of a method's runs, and every run's ms, with index i.*)
+fun run_fields i (runs: ('a * Timing.timing) list) =
+  let
+    val k = string_of_int i;
+    fun med name f = ms (name ^ k) (median (map (Time.toMilliseconds o f o #2) runs));
+    val each = space_implode "," (map (string_of_int o Time.toMilliseconds o #elapsed o #2) runs);
+  in [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, ("runs" ^ k, each)] end;
+
+(*verdictI is the verdict of the first run that did not close; the medians count only if all did.*)
+fun round_fields i runs =
+  let val bad = filter (fn (res, _) => verdict res <> "closes") runs in
+    ("verdict" ^ string_of_int i, (case bad of [] => "closes" | (res, _) :: _ => verdict res)) ::
+    (if null bad then run_fields i runs else [])
+  end;
+
+(*Cancelled from outside, as when the overlay is removed or the heap runs out: answer
+  "interrupted" with the time so far before passing the interrupt on.*)
 fun interrupted instance start exn =
   (Thread_Attributes.uninterruptible_body (fn _ =>
     output instance "interrupted" (times (Timing.result start)));
@@ -492,7 +497,7 @@ fun register name check =
             val limit = Time.fromMilliseconds (the (Int.fromString timeout_ms));
             val start = Timing.start ();
             val (verdict, props) =
-              (*Exn.result would pass interrupts on before we see them*)
+              (*Exn.result would pass interrupts on before we see them.*)
               (case Exn.capture (check limit args) st of
                 Exn.Res res => res
               | Exn.Exn exn =>
@@ -501,62 +506,53 @@ fun register name check =
           in output instance verdict props end}
     | _ => NONE);
 
+
+
+(** print functions **)
+
+(*linter_try METHODS: `by METHODS` on the goal.*)
 val _ =
   register "linter_try" (fn limit => fn [text] => fn st =>
     let val (res, t) = timed limit (run_by st text) in (verdict res, times t @ failure res) end);
 
+(*linter_time N A B: `by A` and `by B` N times each; ms, ms2, cpu, cpu2, gc, gc2 are medians.*)
 val _ =
   register "linter_time" (fn limit => fn [n, a, b] => fn st =>
     let
       fun run text = timed limit (run_by st text) |> apfst verdict;
       val runs = map (fn _ => (run a, run b)) (1 upto the (Int.fromString n));
-      val ok = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
-
-      fun med name f = ms name (median (map (Time.toMilliseconds o f) runs));
     in
-      (if ok then "closes" else "fails",
-        [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
-         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2),
-         med "gc" (#gc o #2 o #1), med "gc2" (#gc o #2 o #2)])
+      (if all_close runs then "closes" else "fails",
+        pair_medians [("ms", #elapsed), ("cpu", #cpu), ("gc", #gc)] runs)
     end);
 
+(*linter_runs N A B: lemma texts A and B N times each; ms, ms2, cpu, cpu2 are medians.*)
 val _ =
   register "linter_runs" (fn limit => fn [n, a, b] => fn st =>
     let
       fun run text = timed limit (run_text st text) |> apfst verdict;
 
-      (*the second of a pair runs faster, so alternate*)
+      (*The second of a pair runs faster, so the order alternates.*)
       fun pair i = if i mod 2 = 1 then (run a, run b) else swap (run b, run a);
       val runs = map pair (1 upto the (Int.fromString n));
-      val ok = forall (fn ((va, _), (vb, _)) => va = "closes" andalso vb = "closes") runs;
-
-      fun med name f = ms name (median (map (Time.toMilliseconds o f) runs));
     in
-      (if ok then "closes" else "fails",
-        [med "ms" (#elapsed o #2 o #1), med "ms2" (#elapsed o #2 o #2),
-         med "cpu" (#cpu o #2 o #1), med "cpu2" (#cpu o #2 o #2)])
+      (if all_close runs then "closes" else "fails", pair_medians [("ms", #elapsed), ("cpu", #cpu)] runs)
     end);
 
-(*the methods run one after another, never in parallel*)
+(*linter_times N M...: each `by M` N times, one after another; msI, cpuI, gcI are the medians and
+  runsI every run's ms, for the methods that always close.*)
 val _ =
   register "linter_times" (fn limit => fn n :: methods => fn st =>
     let
       fun run text = timed limit (run_by st text);
       fun medians (i, text) =
-        let
-          val runs = map (fn _ => run text) (1 upto the (Int.fromString n));
-          fun med name f = ms (name ^ string_of_int i) (median (map (Time.toMilliseconds o f o #2) runs));
-          val each = ("runs" ^ string_of_int i,
-            space_implode "," (map (string_of_int o Time.toMilliseconds o #elapsed o #2) runs));
-        in
-          if forall (fn (res, _) => verdict res = "closes") runs
-          then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, each] else []
+        let val runs = map (fn _ => run text) (1 upto the (Int.fromString n)) in
+          if forall (fn (res, _) => verdict res = "closes") runs then run_fields i runs else []
         end;
     in ("closes", maps medians (map_index I methods)) end);
 
-(*`by M` with and without simproc NAME, as `using [[simproc del: NAME]]` would: one untimed
-  run first (it forces lazy facts), then N rounds of both, the order alternating; ms0 ... are
-  with it, ms1 ... without, verdict0/1 the first run that did not close; RUN_MS limits each run*)
+(*`by M` with and without simproc NAME, as `using [[simproc del: NAME]]` would: one untimed run
+  first, which forces lazy facts, then N rounds of both in alternating order.*)
 fun simproc_rounds limit_ms n name text st =
   let
     val pre = Toplevel.proof_of st;
@@ -568,28 +564,21 @@ fun simproc_rounds limit_ms n name text st =
     fun round i = if i mod 2 = 1 then (run pre, run without) else swap (run without, run pre);
   in map round (1 upto n) end;
 
-fun round_fields i runs =
-  let
-    val bad = filter (fn (res, _) => verdict res <> "closes") runs;
-    fun med name f = ms (name ^ string_of_int i) (median (map (Time.toMilliseconds o f o #2) runs));
-    val each = space_implode "," (map (string_of_int o Time.toMilliseconds o #elapsed o #2) runs);
-  in
-    ("verdict" ^ string_of_int i, (case bad of [] => "closes" | (res, _) :: _ => verdict res)) ::
-    (if null bad then [med "ms" #elapsed, med "cpu" #cpu, med "gc" #gc, ("runs" ^ string_of_int i, each)]
-     else [])
-  end;
-
+(*linter_times_without N RUN_MS NAME M: the fields of round_fields, 0 with simproc NAME and 1
+  without; RUN_MS limits each run.*)
 val _ =
   register "linter_times_without" (fn _ => fn [n, run_ms, name, text] => fn st =>
     let
       val rounds = simproc_rounds (the (Int.fromString run_ms)) (the (Int.fromString n)) name text st;
     in ("closes", round_fields 0 (map #1 rounds) @ round_fields 1 (map #2 rounds)) end);
 
+(*linter_run TEXT: an edited copy of the lemma, from the state before it.*)
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>
     let val (res, t) = timed limit (run_text st text) in (verdict res, times t @ failure res) end);
 
-(*per B: verdict, ms, names A lacks, facts that differ*)
+(*For edit i: okI, msI, then the names missingI that the original makes and it does not, and
+  the facts that differI or are reorderedI; or the messageI of its failure.*)
 fun compare_run limit st st_a (i, text) =
   let
     val (res, t) = timed limit (run_state st text);
@@ -605,6 +594,7 @@ fun compare_run limit st st_a (i, text) =
     | Exn.Exn exn => [("ok" ^ k, verdict res), time, ("message" ^ k, Runtime.exn_message exn)])
   end;
 
+(*linter_names A B...: the definition A, then each edit Bi, counted from 1, from the state before it.*)
 val _ =
   register "linter_names" (fn limit => fn a :: bs => fn st =>
     let val (res, t) = timed limit (run_state st a) in
@@ -613,15 +603,19 @@ val _ =
       | Exn.Exn _ => (verdict res, times t))
     end);
 
-(*the profile is a tracing message on the command, so ask it alone*)
+(*linter_profile M: `by M` once under Poly/ML's time profiler for this thread. The profile is a
+  tracing message on the command, so ask it alone.*)
 val _ =
   register "linter_profile" (fn limit => fn [text] => fn st =>
     let val (res, t) = timed limit (fn () => ML_Profiling.profile "time_thread" (run_by st text) ())
     in (verdict res, times t) end);
 
+(*linter_goal: the features of the goal, for learning which methods close it.*)
 val _ =
   register "linter_goal" (fn _ => fn [] => fn st => ("goal", goal_features (Toplevel.proof_of st)));
 
+(*linter_subgoals M C...: `apply M`, then each C on each subgoal alone; subI is the index of the
+  fastest C and msI its time, for the subgoals some C closes.*)
 val _ =
   register "linter_subgoals" (fn limit => fn first :: closers => fn st =>
     let
@@ -634,6 +628,7 @@ val _ =
         | NONE => []);
     in ("closes", ms "n" n :: maps subgoal (1 upto n)) end);
 
+(*linter_subgoal M I C: `apply M`, then C on subgoal I alone, which it must close.*)
 val _ =
   register "linter_subgoal" (fn limit => fn [first, i, text] => fn st =>
     let
@@ -641,12 +636,15 @@ val _ =
       val (res, t) = timed limit (close_first text (Proof.prefer (the (Int.fromString i)) after));
     in (verdict res, times t @ failure res) end);
 
+(*linter_used_rules M: `by M`; rules are the simp rules and the facts named in M that its proof
+  used, as names that parse here; subgoals counts the goals before it.*)
 val _ =
   register "linter_used_rules" (fn limit => fn [text] => fn st =>
     ("closes",
       [("rules", space_implode " " (Timeout.apply_physical limit (used_rules st text) ())),
        ms "subgoals" (nsubgoals (Toplevel.proof_of st))]));
 
+(*linter_imports REF...: on a theory's last command, the theories it uses and the context counts.*)
 val _ =
   register "linter_imports" (fn limit => fn refs => fn st =>
     let
@@ -654,6 +652,8 @@ val _ =
       val (used, context) = Timeout.apply_physical limit (fn () => (uses thy refs, context_counts thy)) ();
     in ("closes", [("uses", space_implode " " used), ("context", context)]) end);
 
+(*linter_used_members M F...: `by M`; usedI and allI are the theorems of fact FI that its proof
+  used, and all of them, as used_of gives them.*)
 val _ =
   register "linter_used_members" (fn limit => fn text :: facts => fn st =>
     let
@@ -662,6 +662,7 @@ val _ =
         maps (fn (i, (u, a)) => [("used" ^ string_of_int i, u), ("all" ^ string_of_int i, a)]) (map_index I us);
     in (verdict res, times t @ (case res of Exn.Res us => used us | Exn.Exn _ => [])) end);
 
+(*linter_try_del M F...: `by M` with the theorems of the facts F deleted from the simpset.*)
 val _ =
   register "linter_try_del" (fn limit => fn text :: facts => fn st =>
     let val (res, t) = timed limit (run_on (without_simps facts st) text)
