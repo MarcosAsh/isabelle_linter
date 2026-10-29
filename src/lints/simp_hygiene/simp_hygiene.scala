@@ -1,5 +1,5 @@
-/* simp_hygiene: rules that the simplifier and the classical reasoner keep trying for nothing;
-  information only, it needs an Isabelle built with etc/simpstats.patch */
+/* The simp_hygiene lint: rules that the simplifier and the classical reasoner keep trying for
+   nothing. It needs an Isabelle built with etc/simpstats.patch, and only informs. */
 
 package isabelle.isabelle_linter
 
@@ -9,10 +9,10 @@ import isabelle._
 object Simp_Hygiene extends Lint {
   val name = "simp_hygiene"
 
-  /* the patched Isabelle sets this in its etc/settings */
+  /* The patched Isabelle sets this in its etc/settings. */
   def available: Boolean = Isabelle_System.getenv("ISABELLE_RULE_STATISTICS") == "true"
 
-  /* fail_us: time in the failed tries of a conditional rule */
+  /* fail_us is the time in the failed tries of a conditional rule. */
   sealed case class Rule(candidates: Long, matches: Long, rewrites: Long, fail_us: Long,
       conditional: Boolean) {
     def +(r: Rule): Rule =
@@ -25,24 +25,18 @@ object Simp_Hygiene extends Lint {
     def +(p: Proc): Proc = Proc(calls + p.calls, rewrites + p.rewrites, us + p.us)
   }
 
-  /* tries: by the classical reasoner; offers: to blast; used: in the lemma's proof */
+  /* Tries by the classical reasoner, offers to blast, and whether the lemma's proof used the rule. */
   sealed case class Intro(tries: Long, unified: Long, offers: Long, used: Boolean) {
     def +(i: Intro): Intro = Intro(tries + i.tries, unified + i.unified, offers + i.offers, used || i.used)
     def total: Long = tries + offers
   }
 
-  /* one lemma's counts, run once with the statistics on; finished: it ran to the end, so
-    its proof is known */
+  /* One lemma's counts, run once with the statistics on. If it finished, its proof is known. */
   sealed case class Stats(lemma: Lemma, finished: Boolean, ms: Long, rules: Map[String, Rule],
     procs: Map[String, Proc], intros: Map[String, Intro])
 
 
-  /* Per lemma: run it once with the statistics on. Per session, of the rules and simprocs tried
-    at least simp_hygiene_min times: report the [simp] rules and simprocs that never rewrote, the
-    conditional rules whose condition nearly always fails, and the classical rules that are
-    rarely in a proof. Nothing is re-run without them, so the findings are information only. */
-
-  /* an unnamed result is not kept, so the run names it */
+  /* An unnamed result is not kept, so the run names it. */
   val result_name = "linter_rule_stats_result"
 
   def named_source(lemma: Lemma): String = {
@@ -63,34 +57,37 @@ object Simp_Hygiene extends Lint {
       List(named_source(lemma)), Time.seconds(options.real("linter_timeout")))
 
 
-  /* answers: lines of tab-separated fields */
+  /* answers: lines of tab-separated fields, as ml/linter_rule_stats.ML writes them */
 
   private def fields(text: String): List[List[String]] =
     Library.split_lines(text).filter(_.nonEmpty).map(Library.space_explode('\t', _))
 
   private def rules(text: String): Map[String, Rule] =
-    fields(text).collect({ case List(n, c, m, r, us, cond) =>
-      n -> Rule(c.toLong, m.toLong, r.toLong, us.toLong, cond == "1") }).toMap
+    fields(text).collect({ case List(name, candidates, matches, rewrites, fail_us, conditional) =>
+      name -> Rule(candidates.toLong, matches.toLong, rewrites.toLong, fail_us.toLong, conditional == "1") }).toMap
 
   private def procs(text: String): Map[String, Proc] =
-    fields(text).collect({ case List(n, c, r, us) => n -> Proc(c.toLong, r.toLong, us.toLong) }).toMap
+    fields(text).collect({ case List(name, calls, rewrites, us) =>
+      name -> Proc(calls.toLong, rewrites.toLong, us.toLong) }).toMap
 
-  /* a rule's classical tries and blast offers go together */
+  /* A rule's classical tries and blast offers go together. */
   private def intros(text: String): Map[String, Intro] =
-    fields(text).collect({ case List(kind, n, t, u, used) =>
-      val (tries, offers) = if (kind == "blast") (0L, t.toLong) else (t.toLong, 0L)
-      n -> Intro(tries, u.toLong, offers, used == "1") }).groupMapReduce(_._1)(_._2)(_ + _)
+    fields(text).collect({ case List(kind, name, tried, unified, used) =>
+      val (tries, offers) = if (kind == "blast") (0L, tried.toLong) else (tried.toLong, 0L)
+      name -> Intro(tries, unified.toLong, offers, used == "1") }).groupMapReduce(_._1)(_._2)(_ + _)
 
   def stats(lemma: Lemma, answer: Pide.Answer): Option[Stats] =
     for {
-      r <- answer.get("rules")
-      p <- answer.get("procs")
-      c <- answer.get("classical")
-    } yield Stats(lemma, answer.get("proved").contains("1"), answer.ms, rules(r), procs(p), intros(c))
+      rule_lines <- answer.get("rules")
+      proc_lines <- answer.get("procs")
+      classical_lines <- answer.get("classical")
+    } yield Stats(lemma, answer.get("proved").contains("1"), answer.ms, rules(rule_lines), procs(proc_lines),
+      intros(classical_lines))
 
   private def totals[A](maps: List[Map[String, A]], plus: (A, A) => A): Map[String, A] =
-    maps.foldLeft(Map.empty[String, A]) { (acc, m) =>
-      m.foldLeft(acc) { case (a, (k, v)) => a + (k -> a.get(k).map(plus(_, v)).getOrElse(v)) }
+    maps.foldLeft(Map.empty[String, A]) { (sums, counts) =>
+      counts.foldLeft(sums) { case (merged, (name, count)) =>
+        merged + (name -> merged.get(name).map(plus(_, count)).getOrElse(count)) }
     }
 
 
@@ -99,7 +96,7 @@ object Simp_Hygiene extends Lint {
   val simp_attributes: Set[String] = Set("simp")
   val classical_attributes: Set[String] = Set("intro", "elim", "dest")
 
-  /* `lemma NAME [... simp ...]:` with one of the attributes */
+  /* The NAME of `lemma NAME [... simp ...]:` with one of the attributes. */
   def declared_name(lemma: Lemma, attributes: Set[String]): Option[String] =
     lemma.cmds.head.body match {
       case n :: open :: rest if n.token.is_ident && open.is("[") =>
@@ -110,19 +107,19 @@ object Simp_Hygiene extends Lint {
 
   def theory_base(lemma: Lemma): String = Long_Name.base_name(lemma.theory.theory)
 
-  /* the rule is `Thy.name`, `Thy.locale.name` ..., maybe with a `(i)` */
+  /* The rule is `Thy.name`, `Thy.locale.name` ..., maybe with a `(i)`. */
   def declaration(lemmas: List[Lemma], rule: String, attributes: Set[String]): Option[Lemma] = {
     val fact = rule.replaceAll("\\(\\d+\\)$", "").nn
-    lemmas.find { l =>
-      val thy = theory_base(l)
-      declared_name(l, attributes).exists(n => fact.startsWith(thy + ".") && fact.endsWith("." + n))
+    lemmas.find { lemma =>
+      val thy = theory_base(lemma)
+      declared_name(lemma, attributes).exists(name => fact.startsWith(thy + ".") && fact.endsWith("." + name))
     }
   }
 
   def own(lemmas: List[Lemma], rule: String): Boolean =
-    lemmas.exists(l => unnamed(rule).getOrElse(rule).startsWith(theory_base(l) + "."))
+    lemmas.exists(lemma => unnamed(rule).getOrElse(rule).startsWith(theory_base(lemma) + "."))
 
-  /* rules without a name, like the equations of fun, count under "??." and their head constant */
+  /* Rules without a name, like the equations of fun, count under "??." and their head constant. */
   def unnamed(rule: String): Option[String] = if (rule.startsWith("??.")) Some(rule.drop(3)) else None
 
   def simp_rule(rule: String): String =
@@ -131,20 +128,21 @@ object Simp_Hygiene extends Lint {
       case None => "[simp] rule `" + rule + "`"
     }
 
-  /* what to write in `declare FACT [simp del]` */
+  /* What to write in `declare FACT [simp del]`. */
   def simp_fact(rule: String): String = unnamed(rule).map(_ + ".simps").getOrElse(rule)
 
-  /* the declaring lemma, else the lemma with the most of it */
+  /* Where to report a rule: the lemma that declares it, else the lemma with the most of it. */
   private def place(lemmas: List[Lemma], rule: String, attributes: Set[String], users: List[Stats],
       weight: Stats => Long): (Lemma, String) =
     declaration(lemmas, rule, attributes) match {
-      case Some(l) => (l, "declared here")
+      case Some(lemma) => (lemma, "declared here")
       case None if own(lemmas, rule) => (users.maxBy(weight).lemma, "declared in this session")
       case None => (users.maxBy(weight).lemma, "imported")
     }
 
 
-  /* findings */
+  /* Findings, of the rules and simprocs tried at least simp_hygiene_min times in the session.
+     Nothing is re-run without them, so the findings are information only. */
 
   private def coverage(lemmas: List[Lemma], measured: List[Stats]): String =
     "information only, nothing was re-run without it; counted over " + measured.length + " of " +
@@ -155,7 +153,7 @@ object Simp_Hygiene extends Lint {
 
   private def ms(us: Long): String = (us / 1000).toString + " ms"
 
-  /* (1) [simp] rules offered often that never rewrote */
+  /* [simp] rules offered often that never rewrote */
   private def dead_rules(lemmas: List[Lemma], measured: List[Stats], options: Options,
       note: String): List[Finding] =
     for {
@@ -178,7 +176,7 @@ object Simp_Hygiene extends Lint {
       Finding(name, at, at.line, message)
     }
 
-  /* (2) simprocs called often that never rewrote */
+  /* simprocs called often that never rewrote */
   private def idle_procs(measured: List[Stats], options: Options, note: String): List[Finding] =
     for {
       (proc, total) <- totals[Proc](measured.map(_.procs), _ + _).toList.sortBy(-_._2.us)
@@ -194,7 +192,7 @@ object Simp_Hygiene extends Lint {
       Finding(name, at, at.line, message)
     }
 
-  /* (4) conditional rules that do rewrite, but whose condition nearly always fails */
+  /* conditional rules that do rewrite, but whose condition nearly always fails */
   val held_share = 0.1
 
   private def failing_conditions(lemmas: List[Lemma], measured: List[Stats], options: Options,
@@ -214,7 +212,7 @@ object Simp_Hygiene extends Lint {
       Finding(name, at, at.line, message)
     }
 
-  /* (5) classical rules tried often that are rarely in a proof */
+  /* classical rules tried often that are rarely in a proof */
   val used_share = 0.05
 
   private def idle_intros(lemmas: List[Lemma], measured: List[Stats], options: Options,
@@ -245,7 +243,7 @@ object Simp_Hygiene extends Lint {
     else lemmas.map(question(_, options))
 
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] = {
-    val measured = lemmas.flatMap(l => answers.get(question(l, options).key).flatMap(stats(l, _)))
+    val measured = lemmas.flatMap(lemma => answers.get(question(lemma, options).key).flatMap(stats(lemma, _)))
     val note = coverage(lemmas, measured)
     dead_rules(lemmas, measured, options, note) ::: idle_procs(measured, options, note) :::
       failing_conditions(lemmas, measured, options, note) ::: idle_intros(lemmas, measured, options, note)
