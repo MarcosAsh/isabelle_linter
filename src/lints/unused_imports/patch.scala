@@ -1,4 +1,5 @@
-/* unused_imports: a copy of a session's directory with its sessions renamed, edited and built */
+/* The copy that unused_imports builds: a session's directory with its sessions renamed, imports
+   removed from theory headers, and what each build of it checked and exported. */
 
 package isabelle.isabelle_linter
 
@@ -8,14 +9,15 @@ import java.util.regex.{Matcher, Pattern}
 
 
 object Patch {
-  /* like scripts/lint_afp.py, but with its own suffix, so that the two never share a heap */
+  /* Like scripts/lint_afp.py, but with its own suffix, so that the two never share a heap. */
   val suffix = "_Imports"
 
   def patched(session: String): String = session + suffix
 
   def original_theory(theory: String): String = {
-    val q = Long_Name.qualifier(theory)
-    if (q.endsWith(suffix)) Long_Name.qualify(q.stripSuffix(suffix), Long_Name.base_name(theory)) else theory
+    val session = Long_Name.qualifier(theory)
+    if (session.endsWith(suffix)) Long_Name.qualify(session.stripSuffix(suffix), Long_Name.base_name(theory))
+    else theory
   }
 
 
@@ -25,12 +27,13 @@ object Patch {
 
   def session_names(root: String): List[String] = Session.findAllMatchIn(root).map(_.group(1)).toList
 
-  /* names of the directory's theories qualified by one of the sessions; others, like a locale's
-    LocalLexing.items_le_def in session LocalLexing, are left alone */
+  /* Rename the session in names of the directory's theories that it qualifies. Other names, like
+     the locale fact LocalLexing.items_le_def in session LocalLexing, are left alone. */
   def qualify(text: String, names: List[String], theories: Set[String]): String =
-    names.foldLeft(text) { (t, name) =>
-      ("(?<![\\w.])" + Pattern.quote(name) + "\\.(\\w+)").r.replaceAllIn(t, m =>
-        Matcher.quoteReplacement(if (theories(m.group(1))) patched(name) + "." + m.group(1) else m.matched).nn)
+    names.foldLeft(text) { (renamed, name) =>
+      ("(?<![\\w.])" + Pattern.quote(name) + "\\.(\\w+)").r.replaceAllIn(renamed, found =>
+        Matcher.quoteReplacement(
+          if (theories(found.group(1))) patched(name) + "." + found.group(1) else found.matched).nn)
     }
 
   private val root_keywords =
@@ -53,7 +56,7 @@ object Patch {
   private def root_keyword(line: String): Option[String] =
     """^\s*([a-z_]+)\b""".r.findFirstMatchIn(line).map(_.group(1)).filter(root_keywords)
 
-  /* session names, parents, `sessions` lists and qualified theory names; no PDF document */
+  /* Rename the session names, parents, `sessions` lists and qualified theory names; build no PDF. */
   def rename_root(root: String, names: List[String], theories: Set[String]): String = {
     var section = ""
     val lines =
@@ -64,7 +67,7 @@ object Patch {
     qualify(lines.mkString.replaceAll("\\bdocument\\s*=\\s*\"?pdf\"?", "document = false").nn, names, theories)
   }
 
-  /* the ROOT with theories (quoted) added after the last `theories` section of session */
+  /* The ROOT with theories, quoted, added after the last `theories` section of session. */
   def add_theories(root: String, session: String, theories: List[String]): String =
     if (theories.isEmpty) root
     else {
@@ -83,7 +86,7 @@ object Patch {
       (before ::: List(end) ::: theories.map(t => "    " + quote(t) + "\n") ::: after).mkString
     }
 
-  /* the copy's session names */
+  /* Copy dir to target and rename its sessions; returns their original names. */
   def copy(dir: Path, target: Path): List[String] = {
     Isabelle_System.rm_tree(target)
     Isabelle_System.copy_dir(dir, target)
@@ -102,47 +105,49 @@ object Patch {
 
   private def tokens(text: String): List[(Token, Text.Range)] = {
     val toks = Token.explode(Thy_Header.bootstrap_keywords, text)
-    toks.zip(toks.scanLeft(0)(_ + _.source.length)).map({ case (t, o) => (t, Text.Range(o, o + t.source.length)) })
+    val starts = toks.scanLeft(0)(_ + _.source.length)
+    toks.zip(starts).map({ case (token, start) => (token, Text.Range(start, start + token.source.length)) })
   }
 
   private def header(text: String): List[(Token, Text.Range)] =
-    tokens(text).takeWhile(!_._1.is_keyword(Thy_Header.BEGIN))
+    tokens(text).takeWhile({ case (token, _) => !token.is_keyword(Thy_Header.BEGIN) })
 
-  /* the ranges of the header's imports, in order */
+  /* The ranges of the header's imports, in order. */
   def import_ranges(text: String): List[Text.Range] =
-    header(text).dropWhile(!_._1.is_keyword(Thy_Header.IMPORTS)).drop(1)
-      .takeWhile(t => !t._1.is_keyword(Thy_Header.KEYWORDS) && !t._1.is_keyword(Thy_Header.ABBREVS))
-      .filter(_._1.is_proper).map(_._2)
+    header(text).dropWhile({ case (token, _) => !token.is_keyword(Thy_Header.IMPORTS) }).drop(1)
+      .takeWhile({ case (token, _) => !token.is_keyword(Thy_Header.KEYWORDS) && !token.is_keyword(Thy_Header.ABBREVS) })
+      .collect({ case (token, range) if token.is_proper => range })
 
-  /* the text without the imports at these indices, each with the white space before it */
+  /* The text without the imports at these indices, each with the white space before it. */
   def remove_imports(text: String, indices: Set[Int]): String = {
     val toks = header(text)
     val ranges = import_ranges(text)
-    def start(r: Text.Range): Int =
-      toks.filter(t => !t._1.is_space && t._2.stop <= r.start).lastOption.map(_._2.stop).getOrElse(r.start)
-    indices.toList.sorted.reverse.foldLeft(text) { (t, i) =>
-      val r = ranges(i)
-      t.substring(0, start(r)).nn + t.substring(r.stop)
+    def start(range: Text.Range): Int =
+      toks.collect({ case (token, before) if !token.is_space && before.stop <= range.start => before.stop })
+        .lastOption.getOrElse(range.start)
+    indices.toList.sorted.reverse.foldLeft(text) { (edited, i) =>
+      val range = ranges(i)
+      edited.substring(0, start(range)).nn + edited.substring(range.stop)
     }
   }
 
 
   /* build */
 
-  /* a session of the copy after a build: ok, cancelled (never ran), what each theory that finished
-    exports, the seconds its commands took by file, and the errors of the build log */
+  /* A session of the copy after a build: whether it was ok or cancelled before it ran, what each
+     theory that finished exports, the seconds its commands took by file, and its errors. */
   sealed case class Built(ok: Boolean, cancelled: Boolean, content: Map[String, Set[String]],
     times: Map[String, Double], elapsed: Double, cpu: Double, errors: List[String])
 
-  /* only the copy's sessions get these options: the export is session content, so other sessions
-    would be out of date with it and built again; the timings of nearly every command */
+  /* Only the copy's sessions export theories, which other sessions would see as a change and build
+     again; the timing threshold keeps nearly every command's time. */
   def build(options: Options, dirs: List[Path], sessions: List[String], progress: Progress): Map[String, Built] = {
     val extra = List("document=false", "export_theory", "build_timing_threshold=0.001").map(Options.Spec.make)
     val results =
       Build.build(options, selection = Sessions.Selection(sessions = sessions), dirs = dirs, progress = progress,
         augment_options = s => if (sessions.contains(s)) extra else Nil)
     def cancelled = Built(false, true, Map.empty, Map.empty, 0, 0, Nil)
-    sessions.map(s => s -> (if (results.cancelled(s)) cancelled else read(results, s))).toMap
+    sessions.map(session => session -> (if (results.cancelled(session)) cancelled else read(results, session))).toMap
   }
 
   private def read(results: Build.Results, session: String): Built = {
@@ -158,23 +163,24 @@ object Patch {
     }
   }
 
-  /* what each theory declares and proves, from its exports: a digest per type, constant, axiom,
-    theorem statement, class relation and type instance; not positions or printed names */
+  /* What each theory declares and proves, as a digest per type, constant, axiom, theorem statement,
+     class relation and type instance; positions and printed names do not count. */
   def content(store: Store, session: String): Map[String, Set[String]] =
     using(Export.open_session_context0(store, session)) { context =>
       (for (thy <- Export_Theory.theory_names(context)) yield {
-        val t = Export_Theory.read_theory(context.theory(thy), permissive = true)
-        def entities[A <: Export_Theory.Content[A]](kind: String, es: List[Export_Theory.Entity[A]],
-            f: A => Any): List[String] = es.map(e => kind + " " + e.name + " " + e.content.map(f))
+        val theory = Export_Theory.read_theory(context.theory(thy), permissive = true)
+        def entities[A <: Export_Theory.Content[A]](kind: String, all: List[Export_Theory.Entity[A]],
+            content: A => Any): List[String] =
+          all.map(entity => kind + " " + entity.name + " " + entity.content.map(content))
         val lines =
-          entities("type", t.types, identity) ::: entities("const", t.consts, identity) :::
-          entities("axiom", t.axioms, _.prop) ::: entities("thm", t.thms, _.prop) :::
-          t.classrel.map(_.toString) ::: t.arities.map(_.toString)
+          entities("type", theory.types, identity) ::: entities("const", theory.consts, identity) :::
+          entities("axiom", theory.axioms, _.prop) ::: entities("thm", theory.thms, _.prop) :::
+          theory.classrel.map(_.toString) ::: theory.arities.map(_.toString)
         thy -> lines.map(SHA1.digest(_).toString).toSet
       }).toMap
     }
 
-  /* the sessions the copy needs from elsewhere must be built already, as a build would rebuild them */
+  /* The sessions the copy needs from elsewhere must be built already, or its builds would build them. */
   def check_built(options: Options, dirs: List[Path], sessions: List[String]): Unit =
     if (sessions.nonEmpty) {
       val results =
@@ -185,6 +191,6 @@ object Patch {
 
   def clean(options: Options, sessions: List[String]): Unit = {
     val store = Store(options)
-    for (s <- sessions) store.clean_output(None, s)
+    for (session <- sessions) store.clean_output(None, session)
   }
 }
