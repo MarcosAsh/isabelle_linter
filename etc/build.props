@@ -22,6 +22,7 @@ sources = \
   src/lints/simp_scope/simp_scope.scala \
   src/collect/collect.scala \
   src/census/census.scala \
-  src/retime/retime.scala
+  src/retime/retime.scala \
+  src/parent/parent.scala
 services = \
   isabelle.isabelle_linter.Tools
