@@ -26,3 +26,15 @@ session Linter_Imports_Ex in imports_ex = Linter_Imports +
   description "Builds on Linter_Imports, so unused_imports builds it too."
   theories
     Imports_Ex
+
+session Linter_Parent_Lib in "parent/lib" = HOL +
+  description "Example for isabelle linter_parent: a library session."
+  theories
+    Parent_Lib
+
+session Linter_Parent_Client in "parent/client" = HOL +
+  description "Example for isabelle linter_parent: re-checks Linter_Parent_Lib (isabelle linter_parent -d test Linter_Parent_Client)."
+  sessions
+    Linter_Parent_Lib
+  theories
+    Parent_Client
