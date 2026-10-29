@@ -3,5 +3,6 @@ theory Linter_Sledgehammer
 begin
 
 ML_file \<open>linter_sledgehammer.ML\<close>
+ML_file \<open>linter_simproc.ML\<close>
 
 end
