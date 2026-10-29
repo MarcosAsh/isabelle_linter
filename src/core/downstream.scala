@@ -1,4 +1,5 @@
-/* isabelle_linter: the theories that may use what a theory defines */
+/* The texts that may use what a theory defines: later theories of the session and of sessions
+   built on it, with comments blanked, and searches for names in them. */
 
 package isabelle.isabelle_linter
 
@@ -7,7 +8,7 @@ import isabelle._
 import scala.util.matching.Regex
 
 
-/* own text and later texts without comments, read lazily */
+/* A theory's own text and the later texts, without comments, read only when a lint needs them. */
 final class Downstream(own: () => String, read: () => List[String]) {
   lazy val theory: String = own()
   lazy val texts: List[String] = read()
@@ -17,7 +18,8 @@ final class Downstream(own: () => String, read: () => List[String]) {
 object Downstream {
   val none: Downstream = new Downstream(() => "", () => Nil)
 
-  /* per theory: texts of importing theories and of sessions built on it (a superset is safe) */
+  /* For each theory: the texts of theories that import it and of sessions built on the session.
+     A superset is safe, as more text can only make a lint keep more. */
   def make(structure: Sessions.Structure, session: String, own: List[Path],
       snapshots: Map[Document.Node.Name, Document.Snapshot]): Document.Node.Name => Downstream = {
     lazy val sessions = session_texts(structure, session, own)
@@ -30,13 +32,13 @@ object Downstream {
       name: Document.Node.Name): List[Document.Node.Name] = {
     @scala.annotation.tailrec
     def close(found: Set[Document.Node.Name]): Set[Document.Node.Name] = {
-      val more = imports.collect({ case (n, is) if !found(n) && is.exists(found) => n }).toSet
+      val more = imports.collect({ case (thy, imported) if !found(thy) && imported.exists(found) => thy }).toSet
       if (more.isEmpty) found else close(found ++ more)
     }
     (close(Set(name)) - name).toList
   }
 
-  /* the session's own theories are left out: their order is known */
+  /* The session's own theories are left out, as their imports say which come later. */
   def session_texts(structure: Sessions.Structure, session: String, own: List[Path]): List[String] = {
     val later = structure.build_descendants(List(session)).filterNot(_ == session)
     val skip = own.map(_.canonical).toSet
@@ -47,7 +49,7 @@ object Downstream {
   }
 
 
-  /* comments and document text blanked, offsets kept: words there use nothing */
+  /* Comments and document text are blanked, keeping offsets: a name there uses nothing. */
 
   private val opens = List("\\<open>", "\u2039")
   private val closes = List("\\<close>", "\u203a")
@@ -57,16 +59,18 @@ object Downstream {
   def formal(text: String): String = {
     val out = new StringBuilder
     var i = 0
-    def at(ss: List[String]): Option[String] = ss.find(text.startsWith(_, i))
     def line_start: Boolean = i == 0 || text(i - 1) == '\n'
 
-    def balanced(opening: List[String], closing: List[String]): Int = {
-      var j = i
+    /* The end of the nested group that starts at from. */
+    def balanced(from: Int, opening: List[String], closing: List[String]): Int = {
+      var j = from
       var depth = 0
-      while (j < text.length && (depth > 0 || j == i)) {
-        opening.find(text.startsWith(_, j)).map(s => { depth += 1; j += s.length })
-          .orElse(closing.find(text.startsWith(_, j)).map(s => { depth -= 1; j += s.length }))
-          .getOrElse(j += 1)
+      while (j < text.length && (depth > 0 || j == from)) {
+        (opening.find(text.startsWith(_, j)), closing.find(text.startsWith(_, j))) match {
+          case (Some(open), _) => depth += 1; j += open.length
+          case (None, Some(close)) => depth -= 1; j += close.length
+          case (None, None) => j += 1
+        }
       }
       j
     }
@@ -78,27 +82,22 @@ object Downstream {
     def keep(j: Int): Unit = { out ++= text.substring(i, j).nn; i = j }
     def blank(j: Int): Unit = { out ++= text.substring(i, j).nn.map(c => if (c == '\n') c else ' '); i = j }
 
-    /* a document command or \<comment> with its cartouche */
+    /* The end of a document command or \<comment> with its cartouche, if one starts here. */
     def informal: Option[Int] = {
       val rest = text.subSequence(i, text.length).nn
       val doc = if (line_start) document.findPrefixMatchOf(rest) else None
       val com = if (text.startsWith("\\<comment>", i)) comment.findPrefixMatchOf(rest) else None
-      (doc orElse com).map(i + _.end).filter(j => opens.exists(text.startsWith(_, j))).map { j =>
-        val k = i
-        i = j
-        val end = balanced(opens, closes)
-        i = k
-        end
-      }
+      (doc orElse com).map(i + _.end).filter(j => opens.exists(text.startsWith(_, j)))
+        .map(balanced(_, opens, closes))
     }
 
     while (i < text.length) {
       informal match {
         case Some(j) => blank(j)
         case None =>
-          if (text.startsWith("(*", i)) blank(balanced(List("(*"), List("*)")))
+          if (text.startsWith("(*", i)) blank(balanced(i, List("(*"), List("*)")))
           else if (text(i) == '"') keep(string_end)
-          else if (at(opens).isDefined) keep(balanced(opens, closes))
+          else if (opens.exists(text.startsWith(_, i))) keep(balanced(i, opens, closes))
           else keep(i + 1)
       }
     }
@@ -106,7 +105,7 @@ object Downstream {
   }
 
 
-  /* whole word, or qualified name ending in it */
+  /* Any of names as a whole word, or as the end of a qualified name. */
   def words(names: List[String]): Option[Regex] =
     if (names.isEmpty) None
     else Some(names.distinct.map(Regex.quote).mkString("(?<![\\w'])(", "|", ")(?![\\w'])").r)
@@ -114,7 +113,7 @@ object Downstream {
   def find(texts: List[String], regex: Regex): Option[String] =
     texts.iterator.flatMap(regex.findFirstIn(_)).nextOption()
 
-  /* command at line start up to the next; enough for a command's own text */
+  /* A command from its keyword at the start of a line up to the next; enough for its own text. */
   val command_start: Regex =
     ("(?m)^\\s*(lemma|theorem|corollary|proposition|definition|abbreviation|fun|function|primrec|" +
       "datatype|codatatype|record|termination|inductive|inductive_set|type_synonym|typedef|" +

@@ -1,4 +1,5 @@
-/* simp_scope: [simp] rules set for a block or bundled into a step that it does not need */
+/* The simp_scope lint: [simp] rules that a `note` sets for a whole block, or that a step adds to
+   its simp methods, where the steps need fewer. */
 
 package isabelle.isabelle_linter
 
@@ -8,18 +9,20 @@ import isabelle._
 object Simp_Scope extends Lint {
   val name = "simp_scope"
 
-  /* a command whose methods read the simpset, with notes in scope and its step */
+  /* A command whose methods read the simpset, with the notes in scope and its step. */
   sealed case class Use(cmd: Cmd, methods: List[Simp_Method], notes: List[Simp_Note], step: Option[Step]) {
     def own: List[List[Tok]] = methods.flatMap(_.sections).flatMap(_.facts)
   }
 
-  /* a fact or one of its theorems; replaces the own fact at offset `own`, else is added */
+  /* A fact or one of its theorems. With own, it replaces the use's own fact at that offset;
+     otherwise it is added to the use's methods. */
   sealed case class Rule(name: String, fact: String, own: Option[Int] = None)
 
   type Edits = List[(Text.Range, String)]
 
-  /* questions to ask, or edits with median times before and after */
-  type Result = Either[List[Pide.Question], Option[(Edits, Long, Long)]]
+  sealed case class Fix(edits: Edits, medians: Medians)
+
+  type Result = Either[List[Pide.Question], Option[Fix]]
 
 
   /* [simp] notes with the commands in their scope */
@@ -38,7 +41,7 @@ object Simp_Scope extends Lint {
       cmd <- lemma.cmds
       if method_commands(cmd.name)
       methods = Simp_Text.methods(cmd.body)
-      in_scope = scoped.filter(_._2.contains(cmd)).map(_._1)
+      in_scope = scoped.collect({ case (note, scope) if scope.contains(cmd) => note })
       use = Use(cmd, methods, in_scope, lemma.steps.find(_.cmd == cmd))
       if methods.nonEmpty && (in_scope.nonEmpty || (use.step.isDefined && use.own.nonEmpty))
     } yield use
@@ -47,42 +50,43 @@ object Simp_Scope extends Lint {
 
   private def text(lemma: Lemma, fact: List[Tok]): String = Simp_Text.source(lemma.text, fact)
 
-  /* the notes' facts, then the use's own */
+  /* The facts a use may need: those of its notes, then its own. */
   private def slots(lemma: Lemma, use: Use): List[Rule] =
-    use.notes.flatMap(_.facts).map(f => Rule(f, f)) :::
-      use.own.map(f => Rule(text(lemma, f), text(lemma, f), Some(f.head.range.start)))
+    use.notes.flatMap(_.facts).map(fact => Rule(fact, fact)) :::
+      use.own.map(fact => Rule(text(lemma, fact), text(lemma, fact), Some(fact.head.range.start)))
 
-  /* None if unknown */
-  private def names(a: Pide.Answer, prop: String): Option[List[String]] =
-    a.get(prop).filter(_ => a.closes) match {
+  /* The theorem names of an answer property, None if unknown. */
+  private def theorem_names(answer: Pide.Answer, property: String): Option[List[String]] =
+    answer.get(property).filter(_ => answer.closes) match {
       case None | Some("*") => None
       case Some("-") => Some(Nil)
-      case Some(s) => Some(Library.space_explode(' ', s))
+      case Some(names) => Some(Library.space_explode(' ', names))
     }
 
-  /* what the proof used, as theorems or whole facts */
-  def used(lemma: Lemma, use: Use, a: Pide.Answer, members: Boolean): List[Rule] =
+  /* What the proof used, as theorems or as whole facts. */
+  def used(lemma: Lemma, use: Use, proof: Pide.Answer, members: Boolean): List[Rule] =
     slots(lemma, use).zipWithIndex.flatMap { case (slot, i) =>
-      names(a, "used" + i) match {
+      theorem_names(proof, "used" + i) match {
         case Some(Nil) => Nil
-        case Some(ns) if members => ns.map(n => slot.copy(name = n))
+        case Some(names) if members => names.map(name => slot.copy(name = name))
         case _ => List(slot)
       }
     }
 
-  def compress(lemma: Lemma, use: Use, a: Pide.Answer, rules: List[Rule]): List[Rule] =
+  /* A fact of which every theorem is kept stays whole. */
+  def compress(lemma: Lemma, use: Use, proof: Pide.Answer, rules: List[Rule]): List[Rule] =
     slots(lemma, use).zipWithIndex.flatMap { case (slot, i) =>
-      val mine = rules.filter(r => r.fact == slot.fact && r.own == slot.own)
-      names(a, "all" + i) match {
-        case Some(all) if all.nonEmpty && all.forall(n => mine.exists(_.name == n)) => List(slot)
-        case _ => mine
+      val of_slot = rules.filter(rule => rule.fact == slot.fact && rule.own == slot.own)
+      theorem_names(proof, "all" + i) match {
+        case Some(all) if all.nonEmpty && all.forall(name => of_slot.exists(_.name == name)) => List(slot)
+        case _ => of_slot
       }
     }
 
   def keep_own(lemma: Lemma, use: Use): List[Rule] = slots(lemma, use).filter(_.own.isDefined)
 
   def all_notes(use: Use): List[Rule] =
-    use.notes.flatMap(n => n.name.map(List(_)).getOrElse(n.facts)).map(f => Rule(f, f))
+    use.notes.flatMap(note => note.name.map(List(_)).getOrElse(note.facts)).map(fact => Rule(fact, fact))
 
 
   def edits(lemma: Lemma, use: Use, rules: List[Rule]): Edits = {
@@ -91,39 +95,34 @@ object Simp_Scope extends Lint {
     use.methods.flatMap(Simp_Text.rewrite(lemma.text, _, own, add))
   }
 
+  /* All facts of a named note go back in under its name. */
   private def by_name(notes: List[Simp_Note], add: List[String]): List[String] =
-    notes.foldLeft(add) { (names, n) =>
-      n.name match {
-        case Some(name) if n.facts.forall(names.contains) => names.filterNot(n.facts.contains) :+ name
+    notes.foldLeft(add) { (names, note) =>
+      note.name match {
+        case Some(name) if note.facts.forall(names.contains) => names.filterNot(note.facts.contains) :+ name
         case _ => names
       }
     }
 
-  def edited(text: String, start: Int, edits: Edits): String =
-    edits.sortBy(_._1.start).reverse.foldLeft(text) { case (t, (r, s)) =>
-      t.substring(0, r.start - start).nn + s + t.substring(r.stop - start)
-    }
-
   def methods(lemma: Lemma, use: Use, rules: List[Rule]): String = {
     val start = use.cmd.body.head.range.start
-    val es = edits(lemma, use, rules)
-    edited(lemma.text.substring(start, use.cmd.range.stop).nn, start, es)
+    Lemma.edit(lemma.text.substring(start, use.cmd.range.stop).nn, start, edits(lemma, use, rules))
   }
 
 
-  /* ask what each step used, drop rules one by one, re-run, time the first fix */
-
+  /* Per lemma: ask what each step used, drop rules one by one, re-run the lemma with each fix from
+     fine to coarse, and time the first that works. */
   def check(lemma: Lemma, answers: Pide.Answers, options: Options): Result = {
-    val ns = notes(lemma).map(_._1)
-    val us = uses(lemma)
+    val lemma_notes = notes(lemma).map(_._1)
+    val lemma_uses = uses(lemma)
     val original = rerun(lemma, "original", lemma.source, Time.seconds(options.real("linter_timeout")))
 
-    if (ns.isEmpty && us.isEmpty) Right(None)
+    if (lemma_notes.isEmpty && lemma_uses.isEmpty) Right(None)
     else {
       answers.get(original.key) match {
         case None => Left(List(original))
-        case Some(a) if !a.closes || a.ms < options.real("simp_scope_slow") * 1000 => Right(None)
-        case Some(a) => new Search(lemma, ns, us, a, answers, options).run()
+        case Some(answer) if !answer.closes || answer.ms < options.real("simp_scope_slow") * 1000 => Right(None)
+        case Some(answer) => new Search(lemma, lemma_notes, lemma_uses, answer, answers, options).run()
       }
     }
   }
@@ -131,44 +130,48 @@ object Simp_Scope extends Lint {
   private class Search(lemma: Lemma, notes: List[Simp_Note], uses: List[Use], original: Pide.Answer,
       answers: Pide.Answers, options: Options) {
     private val timeout = Time.seconds(options.real("linter_timeout"))
-    private val budget = Time.ms((original.ms * options.real("linter_factor")).toLong max 1000L min timeout.ms)
+    private val budget = Time.ms(Pide.budget(original, options) min timeout.ms)
     private val steps = uses.filter(_.step.isDefined)
 
     def run(): Result =
       for {
         found <- answered(steps.map(used_question))
         proofs = steps.zip(found).toMap
-        kept <- all(steps.map(u => u -> greedy(u, proofs(u))))
-        fix <- first(candidates(proofs, kept.toMap).zipWithIndex)
+        kept <- combined(steps.map(use => use -> greedy(use, proofs(use))))
+        fix <- first_closing(candidates(proofs, kept.toMap).zipWithIndex)
         result <- timed(fix)
       } yield result
 
-    private def answered(qs: List[Pide.Question]): Either[List[Pide.Question], List[Pide.Answer]] =
-      qs.filterNot(q => answers.contains(q.key)) match {
-        case Nil => Right(qs.map(q => answers(q.key)))
+    private def answered(questions: List[Pide.Question]): Either[List[Pide.Question], List[Pide.Answer]] =
+      questions.filterNot(question => answers.contains(question.key)) match {
+        case Nil => Right(questions.map(question => answers(question.key)))
         case missing => Left(missing)
       }
 
-    private def all[A](xs: List[(Use, Either[List[Pide.Question], A])]): Either[List[Pide.Question], List[(Use, A)]] =
-      xs.flatMap(_._2.left.getOrElse(Nil)) match {
-        case Nil => Right(xs.map({ case (u, r) => u -> r.toOption.get }))
+    /* The results of all uses, or the questions any of them still asks. */
+    private def combined[A](results: List[(Use, Either[List[Pide.Question], A])]): Either[List[Pide.Question], List[(Use, A)]] =
+      results.flatMap(_._2.left.getOrElse(Nil)) match {
+        case Nil => Right(results.map({ case (use, result) => use -> result.toOption.get }))
         case missing => Left(missing)
       }
 
-    /* used rules minus each one the step does without alone; the base decides for all of them, so
-      a timeout under load must not: as written it already closed, else it gets the lemma's budget */
+    /* The used rules minus each one the step does without alone. The base try decides for all of
+       them, so it gets the lemma's budget, and is skipped when it is the step as written. */
     private def greedy(use: Use, proof: Pide.Answer): Either[List[Pide.Question], List[Rule]] = {
       val rules = used(lemma, use, proof, members = true)
-      val limit = Time.ms(proof.ms * 2 max 1000L min timeout.ms)
-      def ask(rs: List[Rule], limit: Time): Pide.Question = try_question(use, compress(lemma, use, proof, rs), limit)
+      val limit = Time.ms(proof.ms * 2 max Pide.min_limit_ms min timeout.ms)
+      def try_rules(rules: List[Rule], limit: Time): Pide.Question =
+        try_question(use, compress(lemma, use, proof, rules), limit)
 
       if (rules.isEmpty || rules.length > options.int("simp_scope_greedy")) Right(rules)
       else {
-        val base = if (as_written(use, proof, rules)) None else Some(ask(rules, budget))
-        val drops = rules.map(r => r -> ask(rules.filterNot(_ == r), limit))
-        answered(base.toList ::: drops.map(_._2)).map { _ =>
-          if (!base.forall(q => answers(q.key).closes)) rules
-          else rules.filterNot(r => drops.exists({ case (s, q) => s == r && answers(q.key).closes }))
+        val base = if (as_written(use, proof, rules)) None else Some(try_rules(rules, budget))
+        val without_each = rules.map(rule => rule -> try_rules(rules.filterNot(_ == rule), limit))
+        def can_go(rule: Rule): Boolean =
+          without_each.exists({ case (dropped, question) => dropped == rule && answers(question.key).closes })
+        answered(base.toList ::: without_each.map(_._2)).map { _ =>
+          if (!base.forall(question => answers(question.key).closes)) rules
+          else rules.filterNot(can_go)
         }
       }
     }
@@ -176,48 +179,51 @@ object Simp_Scope extends Lint {
     private def as_written(use: Use, proof: Pide.Answer, rules: List[Rule]): Boolean =
       use.notes.isEmpty && methods(lemma, use, compress(lemma, use, proof, rules)) == use.step.get.methods
 
-    /* fixes from fine to coarse: rules left, all used, whole facts, then own facts only */
+    /* Fixes from fine to coarse: the rules left, all used, whole facts, then own facts only. */
     private def candidates(proofs: Map[Use, Pide.Answer], kept: Map[Use, List[Rule]]): List[Edits] = {
-      def full(u: Use): List[Rule] = keep_own(lemma, u) ::: all_notes(u)
-      def step(u: Use, rules: List[Rule]): List[Rule] = compress(lemma, u, proofs(u), rules)
-      def members(u: Use): List[Rule] = step(u, used(lemma, u, proofs(u), members = true))
-      def facts(u: Use): List[Rule] = step(u, used(lemma, u, proofs(u), members = false))
+      def full(use: Use): List[Rule] = keep_own(lemma, use) ::: all_notes(use)
+      def step(use: Use, rules: List[Rule]): List[Rule] = compress(lemma, use, proofs(use), rules)
+      def members(use: Use): List[Rule] = step(use, used(lemma, use, proofs(use), members = true))
+      def facts(use: Use): List[Rule] = step(use, used(lemma, use, proofs(use), members = false))
 
       List(
-        candidate(notes, u => if (u.step.isDefined) step(u, kept(u)) else keep_own(lemma, u)),
-        candidate(notes, u => if (u.step.isDefined) members(u) else full(u)),
-        candidate(notes, u => if (u.step.isDefined) facts(u) else full(u)),
-        candidate(Nil, u => if (u.step.isDefined) step(u, kept(u).filter(_.own.isDefined)) else keep_own(lemma, u))
-      ).distinctBy(lemma.replace_all).filterNot(es => lemma.replace_all(es) == lemma.source)
+        candidate(notes, use => if (use.step.isDefined) step(use, kept(use)) else keep_own(lemma, use)),
+        candidate(notes, use => if (use.step.isDefined) members(use) else full(use)),
+        candidate(notes, use => if (use.step.isDefined) facts(use) else full(use)),
+        candidate(Nil, use =>
+          if (use.step.isDefined) step(use, kept(use).filter(_.own.isDefined)) else keep_own(lemma, use))
+      ).distinctBy(lemma.replace_all).filterNot(edits => lemma.replace_all(edits) == lemma.source)
     }
 
     private def candidate(dropped: List[Simp_Note], rules: Use => List[Rule]): Edits =
-      dropped.flatMap(_.attributes.map(_ -> "")) ::: uses.flatMap(u => edits(lemma, u, rules(u)))
+      dropped.flatMap(_.attributes.map(_ -> "")) ::: uses.flatMap(use => edits(lemma, use, rules(use)))
 
     @scala.annotation.tailrec
-    private def first(candidates: List[(Edits, Int)]): Either[List[Pide.Question], Option[Edits]] =
+    private def first_closing(candidates: List[(Edits, Int)]): Either[List[Pide.Question], Option[Edits]] =
       candidates match {
         case Nil => Right(None)
-        case (es, i) :: rest =>
-          val q = rerun(lemma, "edit" + i, lemma.replace_all(es), budget)
-          answers.get(q.key) match {
-            case None => Left(List(q))
-            case Some(a) if a.closes => Right(Some(es))
-            case _ => first(rest)
+        case (edits, i) :: rest =>
+          val question = rerun(lemma, "edit" + i, lemma.replace_all(edits), budget)
+          answers.get(question.key) match {
+            case None => Left(List(question))
+            case Some(answer) if answer.closes => Right(Some(edits))
+            case _ => first_closing(rest)
           }
       }
 
-    /* each run gets the budget, the question's limit covers all */
+    /* Each run gets the budget, and the question's limit covers all of them. */
     private def timed(fix: Option[Edits]): Result =
       fix match {
         case None => Right(None)
-        case Some(es) =>
+        case Some(edits) =>
           val runs = options.int("simp_scope_runs")
-          val q = Pide.Question(lemma.key + ":time", lemma.theory, lemma.before.command, "linter_runs",
-            List(runs.toString, lemma.source, lemma.replace_all(es)), Time.ms(budget.ms * 2 * runs), serial = true)
-          answers.get(q.key) match {
-            case None => Left(List(q))
-            case Some(t) if t.closes && t.ms2 * options.real("simp_scope_speedup") < t.ms => Right(Some((es, t.ms, t.ms2)))
+          val question = Pide.Question(lemma.key + ":time", lemma.theory, lemma.before.command, "linter_runs",
+            List(runs.toString, lemma.source, lemma.replace_all(edits)), Time.ms(budget.ms * 2 * runs),
+            serial = true)
+          answers.get(question.key) match {
+            case None => Left(List(question))
+            case Some(timing) if timing.closes && timing.ms2 * options.real("simp_scope_speedup") < timing.ms =>
+              Right(Some(Fix(edits, timing.medians)))
             case _ => Right(None)
           }
       }
@@ -238,13 +244,15 @@ object Simp_Scope extends Lint {
     }
   }
 
-  /* theory-level [simp] declarations with later lemmas; reported only, others see them */
+
+  /* Theory-level [simp] declarations, tried on the later lemmas of their theory. They are only
+     reported: other theories may see them. */
 
   val declaration_commands: Set[String] = Set("declare", "lemmas")
 
   def is_declaration(lemma: Lemma): Boolean = declaration_commands(lemma.cmds.head.name)
 
-  /* a theory's [simp] declarations, each as a one-command target */
+  /* A theory's [simp] declarations, each as a target of one command. */
   private def declaration_targets(snapshot: Document.Snapshot): List[Lemma] = {
     val text = snapshot.node.source
     val lines = Line.Document(text)
@@ -256,33 +264,34 @@ object Simp_Scope extends Lint {
   }
 
   def declarations(targets: List[Lemma]): List[(Simp_Note, List[Lemma])] = {
-    val (decls, lemmas) = targets.partition(is_declaration)
+    val (declaring, lemmas) = targets.partition(is_declaration)
     for {
-      decl <- decls
-      d <- Simp_Text.note(decl.text, decl.cmds.head).toList
-      after = lemmas.filter(l => l.theory == decl.theory && l.start > decl.start).sortBy(_.start)
+      declaration <- declaring
+      note <- Simp_Text.note(declaration.text, declaration.cmds.head).toList
+      after = lemmas.filter(lemma => lemma.theory == declaration.theory && lemma.start > declaration.start)
+        .sortBy(_.start)
       if after.nonEmpty
-    } yield (d, after)
+    } yield (note, after)
   }
 
-  /* lemma after `declare a[simp del]`; over a minute counts as needing it (may loop) */
-  private def undeclared(d: Simp_Note, lemma: Lemma, options: Options): Pide.Question = {
-    val off = d.name.map(List(_)).getOrElse(d.facts).map(_ + "[simp del]").mkString(" ")
-    rerun(lemma, "declare:" + d.cmd.offset, "declare " + off + "\n" + lemma.source,
+  /* The lemma after `declare a[simp del]`. Over a minute counts as needing it, as it may loop. */
+  private def undeclared(note: Simp_Note, lemma: Lemma, options: Options): Pide.Question = {
+    val off = note.name.map(List(_)).getOrElse(note.facts).map(_ + "[simp del]").mkString(" ")
+    rerun(lemma, "declare:" + note.cmd.offset, "declare " + off + "\n" + lemma.source,
       Time.seconds(options.real("linter_timeout") min 60))
   }
 
-  /* at most half of the lemmas after it fail without it */
-  private def declaration_finding(d: Simp_Note, after: List[Lemma], answers: Pide.Answers,
+  /* Reported if at most half of the lemmas after it fail without it. */
+  private def declaration_finding(note: Simp_Note, after: List[Lemma], answers: Pide.Answers,
       options: Options): Option[Finding] = {
-    val needed = after.filterNot(l => answers.get(undeclared(d, l, options).key).exists(_.closes))
+    val needed = after.filterNot(lemma => answers.get(undeclared(note, lemma, options).key).exists(_.closes))
     if (2 * needed.length > after.length) None
     else {
-      val names = needed.map(l => "line " + l.line).mkString(", ")
+      val names = needed.map(lemma => "line " + lemma.line).mkString(", ")
       val message = "the [simp] here is needed by " + needed.length + " of the " + after.length +
         " lemmas after it in this theory" + (if (needed.isEmpty) "" else ": " + names) +
         " (the others still work with it deleted; other theories may need it)"
-      Some(Finding(name, after.head, after.head.line(d.cmd.offset), message))
+      Some(Finding(name, after.head, after.head.line(note.cmd.offset), message))
     }
   }
 
@@ -301,7 +310,7 @@ object Simp_Scope extends Lint {
 
   private def theory_questions(lemmas: List[Lemma], options: Options): List[Pide.Question] =
     if (!options.bool("simp_scope_theory")) Nil
-    else for ((d, after) <- declarations(lemmas); l <- after) yield undeclared(d, l, options)
+    else for ((note, after) <- declarations(lemmas); lemma <- after) yield undeclared(note, lemma, options)
 
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     lemma_findings(lemmas, answers, options) ::: theory_findings(lemmas, answers, options)
@@ -309,24 +318,26 @@ object Simp_Scope extends Lint {
   private def lemma_findings(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     for {
       lemma <- lemmas.filterNot(is_declaration)
-      (es, before, after) <- check(lemma, answers, options).toOption.flatten.toList
+      fix <- check(lemma, answers, options).toOption.flatten.toList
     } yield {
-      val changes = lemma.cmds.filter(c => es.exists(e => inside(c, e._1))).map(change(lemma, _, es))
-      val message = ("simp rules only where the steps need them: " + before + " ms as written, " + after +
-        " ms with the fix (medians, alone)") :: changes
-      Finding(name, lemma, lemma.line, message.mkString("\n"), Some(lemma.replace_all(es)))
+      val changes =
+        lemma.cmds.filter(cmd => fix.edits.exists(edit => inside(cmd, edit._1))).map(change(lemma, _, fix.edits))
+      val message = ("simp rules only where the steps need them: " + fix.medians.before + " ms as written, " +
+        fix.medians.after + " ms with the fix (medians, alone)") :: changes
+      Finding(name, lemma, lemma.line, message.mkString("\n"), Some(lemma.replace_all(fix.edits)))
     }
 
   private def theory_findings(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     if (!options.bool("simp_scope_theory")) Nil
-    else declarations(lemmas).flatMap({ case (d, after) => declaration_finding(d, after, answers, options) })
+    else declarations(lemmas).flatMap({ case (note, after) => declaration_finding(note, after, answers, options) })
 
-  private def inside(cmd: Cmd, r: Text.Range): Boolean = cmd.range.start <= r.start && r.stop <= cmd.range.stop
+  private def inside(cmd: Cmd, range: Text.Range): Boolean =
+    cmd.range.start <= range.start && range.stop <= cmd.range.stop
 
-  private def change(lemma: Lemma, cmd: Cmd, es: Edits): String = {
+  private def change(lemma: Lemma, cmd: Cmd, edits: Edits): String = {
     def flat(s: String): String = s.replaceAll("\\s+", " ").nn
     val old = lemma.text.substring(cmd.range.start, cmd.range.stop).nn
-    val mine = es.filter(e => inside(cmd, e._1))
-    "  line " + lemma.line(cmd.range.start) + ": `" + flat(old) + "` -> `" + flat(edited(old, cmd.range.start, mine)) + "`"
+    val fixed = Lemma.edit(old, cmd.range.start, edits.filter(edit => inside(cmd, edit._1)))
+    "  line " + lemma.line(cmd.range.start) + ": `" + flat(old) + "` -> `" + flat(fixed) + "`"
   }
 }

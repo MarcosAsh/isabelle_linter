@@ -1,4 +1,5 @@
-/* linter_retime: time the census's slowest `by` steps again, one at a time */
+/* The linter_retime tool: time the census's slowest `by` steps again, one at a time, as the build's
+   own timings come from a loaded machine. */
 
 package isabelle.isabelle_linter
 
@@ -6,7 +7,7 @@ import isabelle._
 
 
 object Retime {
-  /* a census row: offset is in symbols, from 1 */
+  /* A row of linter_census -O, whose offset is in symbols, counted from 1. */
   sealed case class Row(session: String, file: String, offset: Int, seconds: Double, text: String)
 
   def read_rows(path: Path): List[Row] =
@@ -27,9 +28,9 @@ object Retime {
     val steps = for (lemma <- checked.lemmas if lemma.ok; step <- lemma.steps) yield (lemma, step)
     val index = Synchronized(Map.empty[String, Symbol.Index])
     def decode(lemma: Lemma, offset: Int): Int =
-      index.change_result { m =>
-        val i = m.getOrElse(lemma.theory.node, Symbol.Index(lemma.text))
-        (i.decode(offset), m + (lemma.theory.node -> i))
+      index.change_result { indices =>
+        val theory_index = indices.getOrElse(lemma.theory.node, Symbol.Index(lemma.text))
+        (theory_index.decode(offset), indices + (lemma.theory.node -> theory_index))
       }
     for (row <- rows) yield {
       val file = Path.explode(row.file)
@@ -42,19 +43,25 @@ object Retime {
 
   /* each step alone, so the runs do not compete */
 
+  /* The medians of a step's runs, and the elapsed ms of each run. */
+  sealed case class Retimed(verdict: String, median: Option[Long], cpu: Option[Long], gc: Option[Long], runs: String)
+
+  val not_found: Retimed = Retimed("not_found", None, None, None, "")
+
   def time_step(checked: Pide.Checked, lemma: Lemma, step: Step, runs: Int, timeout: Time,
-      progress: Progress): (String, Option[Long], Option[Long], Option[Long], String) = {
+      progress: Progress): Retimed = {
     val key = lemma.key + ":" + step.cmd.offset + ":retime"
-    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_times",
+    val question = Pide.Question(key, lemma.theory, step.goal.command, "linter_times",
       List(runs.toString, step.methods), timeout)
-    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    val answer = Pide.ask(checked.session, List(question), progress)(key)
     answer.long("ms0") match {
-      case Some(ms) => ("closes", Some(ms), answer.long("cpu0"), answer.long("gc0"), answer.get("runs0").getOrElse(""))
-      case None => (if (answer.closes) "fails" else answer.verdict, None, None, None, "")
+      case Some(ms) =>
+        Retimed("closes", Some(ms), answer.long("cpu0"), answer.long("gc0"), answer.get("runs0").getOrElse(""))
+      case None => Retimed(if (answer.closes) "fails" else answer.verdict, None, None, None, "")
     }
   }
 
-  /* datatype_no_proper_subterm: as is, without, cached; in turn on the same state, then counted */
+  /* datatype_no_proper_subterm as is, without and cached, in turn on the same state, then counted */
   val variant_fields: List[String] =
     (for (i <- List(0, 1, 2); f <- List("verdict", "ms", "cpu", "gc", "runs")) yield f + i) :::
       List("calls", "hits", "inside_ms", "step_ms", "counted_verdict")
@@ -63,14 +70,14 @@ object Retime {
       progress: Progress): List[String] = {
     val key = lemma.key + ":" + step.cmd.offset + ":variants"
     val total = Time.ms(timeout.ms * (3 * runs + 2))
-    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_simproc_variants",
+    val question = Pide.Question(key, lemma.theory, step.goal.command, "linter_simproc_variants",
       List(runs.toString, timeout.ms.toString, step.methods), total)
-    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    val answer = Pide.ask(checked.session, List(question), progress)(key)
     val fields = variant_fields.map(answer.get(_).getOrElse(""))
     if (answer.closes) fields else answer.verdict :: fields.tail
   }
 
-  /* RETIME_WITHOUT set: the variants instead of the plain timing */
+  /* With RETIME_WITHOUT set, time the variants instead of the plain step. */
   def variants_mode: Boolean = Isabelle_System.getenv("RETIME_WITHOUT").nonEmpty
 
   def variants_line(checked: Pide.Checked, row: Row, found: Option[(Lemma, Step)], runs: Int, timeout: Time,
@@ -83,14 +90,14 @@ object Retime {
     ((row.session :: row.file :: row.offset.toString :: row.seconds.toString :: fields) :+ row.text).mkString("\t")
   }
 
-  /* the profile is a tracing message on the step's command; asked alone, it can only be this one's */
+  /* The profile is a tracing message on the step's command; asked alone, it can only be this one's. */
   val profile_top = 40
 
   def profile_step(checked: Pide.Checked, lemma: Lemma, step: Step, timeout: Time,
       progress: Progress): Option[ML_Profiling.Report] = {
     val key = lemma.key + ":" + step.cmd.offset + ":profile"
-    val q = Pide.Question(key, lemma.theory, step.goal.command, "linter_profile", List(step.methods), timeout)
-    val answer = Pide.ask(checked.session, List(q), progress)(key)
+    val question = Pide.Question(key, lemma.theory, step.goal.command, "linter_profile", List(step.methods), timeout)
+    val answer = Pide.ask(checked.session, List(question), progress)(key)
     if (!answer.closes) None
     else {
       val state = checked.session.get_state()
@@ -101,14 +108,14 @@ object Retime {
 
   def profile_lines(row: Row, report: ML_Profiling.Report): List[String] = {
     val total = report.total.count
-    /* clean names drop the id of each instance, so the same function can come more than once */
+    /* Clean names drop the id of each instance, so the same function can come more than once. */
     val counts = report.entries.groupMapReduce(_.name)(_.count)(_ + _).toList.sortBy(-_._2)
     for (((name, count), i) <- counts.take(profile_top).zipWithIndex)
     yield List(row.session, row.file, row.offset.toString, i.toString, count.toString, total.toString,
       name.replace('\t', ' ').nn).mkString("\t")
   }
 
-  /* lines for the timings and, if profile, for the profiles */
+  /* Lines for the timings and, if profile, for the profiles. */
   def retime_session(options: Options, session_name: String, rows: List[Row], dirs: List[Path],
       profile: Boolean, progress: Progress): (List[String], List[String]) =
     Pide.check(options, session_name, dirs, progress, imported = true) { checked =>
@@ -118,30 +125,30 @@ object Retime {
           val timeout = Time.seconds((row.seconds * options.real("retime_factor")) max 10.0)
           if (variants_mode) (variants_line(checked, row, found, runs, timeout, progress), Nil)
           else {
-            val (verdict, median, cpu, gc, each) =
+            val timed =
               found match {
-                case None => ("not_found", None, None, None, "")
+                case None => not_found
                 case Some((lemma, step)) => time_step(checked, lemma, step, runs, timeout, progress)
               }
             val profiled =
               for {
-                (lemma, step) <- found if profile && verdict == "closes"
+                (lemma, step) <- found if profile && timed.verdict == "closes"
                 report <- profile_step(checked, lemma, step, timeout, progress)
               } yield profile_lines(row, report)
 
-            progress.echo(Library.format("retime: %8.2f s -> %s %s", row.seconds,
-              median.map(ms => Library.format("%.2f s", ms / 1000.0)).getOrElse(verdict), row.text.take(60)))
+            val result = timed.median.map(ms => Library.format("%.2f s", ms / 1000.0)).getOrElse(timed.verdict)
+            progress.echo(Library.format("retime: %8.2f s -> %s %s", row.seconds, result, row.text.take(60)))
             val line =
-              List(row.session, row.file, row.offset.toString, row.seconds.toString, verdict,
-                List(median, cpu, gc).map(_.map(_.toString).getOrElse("")).mkString("\t"), runs.toString,
-                each, row.text).mkString("\t")
+              List(row.session, row.file, row.offset.toString, row.seconds.toString, timed.verdict,
+                List(timed.median, timed.cpu, timed.gc).map(_.map(_.toString).getOrElse("")).mkString("\t"),
+                runs.toString, timed.runs, row.text).mkString("\t")
             (line, profiled.getOrElse(Nil))
           }
         }
       (results.map(_._1), results.flatMap(_._2))
     }
 
-  /* sessions already in output are skipped, so a long run can resume */
+  /* Sessions already in output are skipped, so a long run can resume. */
   def retime(options: Options, rows: List[Row], output: Path, profiles: Option[Path], dirs: List[Path],
       progress: Progress): Unit = {
     if (!output.is_file && variants_mode) {
@@ -156,13 +163,14 @@ object Retime {
     }
     val done = split_lines(File.read(output)).drop(1).filter(_.nonEmpty).map(_.takeWhile(_ != '\t')).toSet
     val sessions = rows.groupBy(_.session).toList.sortBy(-_._2.map(_.seconds).sum)
-    for ((session_name, rs) <- sessions) {
+    for ((session_name, session_rows) <- sessions) {
       if (done(session_name)) progress.echo("Skipping " + session_name + ": already timed")
       else {
-        progress.echo(session_name + ": " + rs.length + " steps")
-        /* a session that stops (its prover died, say) is not written, so a resumed run retries it */
+        progress.echo(session_name + ": " + session_rows.length + " steps")
+        /* A session that stops, as when its prover dies, is not written, so a resumed run retries it. */
         try {
-          val (lines, profile) = retime_session(options, session_name, rs, dirs, profiles.isDefined, progress)
+          val (lines, profile) =
+            retime_session(options, session_name, session_rows, dirs, profiles.isDefined, progress)
           for (path <- profiles if profile.nonEmpty) File.append(path, profile.mkString("", "\n", "\n"))
           File.append(output, lines.mkString("", "\n", "\n"))
         }
