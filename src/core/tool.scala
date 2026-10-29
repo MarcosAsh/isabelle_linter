@@ -1,4 +1,5 @@
-/* isabelle_linter: command-line tool */
+/* The `isabelle linter` tool: run the lints on a session, print the findings and, with -F, write
+   the fixes into the theory files. */
 
 package isabelle.isabelle_linter
 
@@ -9,42 +10,36 @@ object Tool {
   val lints: List[Lint] =
     List(Unused, Faster_Step, Diagnostic_Commands, Simp_Hygiene, Datatype_Plugins, Fun_To_Primrec, Simp_Scope)
 
-  /* simp_hygiene only where the Isabelle counts simp rules */
-  val default_lints: List[Lint] = lints.filter(l => l != Simp_Hygiene || Simp_Hygiene.available)
+  /* simp_hygiene runs by default only where Isabelle counts simp rules. */
+  val default_lints: List[Lint] = lints.filter(lint => lint != Simp_Hygiene || Simp_Hygiene.available)
 
-  /* each fix was checked alone: combine edits of disjoint ranges, otherwise one fix per lemma; an
-    edit may reach past its lemma, like a deletion that takes its line with it */
-  def lemma_fix(fs: List[Finding]): (Text.Range, String) = {
-    val lemma = fs.head.lemma
-    val edits = fs.flatMap(_.edit).distinct.sortBy(_._1.start)
+  /* Each fix was checked alone, so the edits of one lemma combine only if their ranges are
+     disjoint; otherwise the first fix wins. An edit may reach past its lemma, like a deleted line. */
+  def lemma_fix(findings: List[Finding]): (Text.Range, String) = {
+    val lemma = findings.head.lemma
+    val edits = findings.flatMap(_.edit).distinct.sortBy(_._1.start)
     val ranges = edits.map(_._1)
-    val disjoint = ranges.zip(ranges.drop(1)).forall({ case (a, b) => a.stop <= b.start })
-    if (fs.forall(_.edit.isDefined) && disjoint) {
+    val disjoint = ranges.zip(ranges.drop(1)).forall({ case (first, second) => first.stop <= second.start })
+    if (findings.forall(_.edit.isDefined) && disjoint) {
       val range = Text.Range(ranges.head.start min lemma.start, ranges.last.stop max lemma.stop)
-      range -> replace(lemma.text, range, edits)
+      range -> Lemma.edit(range.substring(lemma.text), range.start, edits)
     }
-    else Text.Range(lemma.start, lemma.stop) -> fs.head.fix.get
+    else Text.Range(lemma.start, lemma.stop) -> findings.head.fix.get
   }
 
-  /* the text of range with the edits inside it, sorted and disjoint */
-  def replace(text: String, range: Text.Range, edits: List[(Text.Range, String)]): String =
-    edits.reverse.foldLeft(range.substring(text)) { case (t, (r, s)) =>
-      t.substring(0, r.start - range.start).nn + s + t.substring(r.stop - range.start)
-    }
-
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
-    for ((theory, fs) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
+    for ((theory, theory_findings) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
       val path = theory.path
       val text = File.read(path)
-      val checked = fs.head.lemma.text
-      val lemmas = fs.groupBy(_.lemma.start).values.toList
+      val checked = theory_findings.head.lemma.text
+      val lemmas = theory_findings.groupBy(_.lemma.start).values.toList
       val fixed =
-        lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (t, (r, s)) =>
-          if (r.substring(t) != r.substring(checked)) error("File changed: " + path)
-          t.substring(0, r.start).nn + s + t.substring(r.stop)
+        lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (edited, (range, replacement)) =>
+          if (range.substring(edited) != range.substring(checked)) error("File changed: " + path)
+          edited.substring(0, range.start).nn + replacement + edited.substring(range.stop)
         }
       File.write(path, fixed)
-      progress.echo("Fixed " + lemmas.length + " lemmas (" + fs.length + " findings) in " + path.implode)
+      progress.echo("Fixed " + lemmas.length + " lemmas (" + theory_findings.length + " findings) in " + path.implode)
     }
 
   val linter_tool: Isabelle_Tool =
@@ -79,13 +74,14 @@ Usage: isabelle linter [OPTIONS] SESSION
             case _ => getopts.usage()
           }
         val (imports, others) = selected.partition(_ == Unused_Imports.name)
-        val run = others.map(n => lints.find(_.name == n).getOrElse(error("Unknown lint " + quote(n))))
+        val run = others.map(name => lints.find(_.name == name).getOrElse(error("Unknown lint " + quote(name))))
 
         val progress = new Console_Progress()
         if (run.nonEmpty) {
           val findings = Pide.run(options, session_name, run, dirs = dirs.toList, progress = progress)
-          for (f <- findings.sortBy(f => (f.lemma.theory.node, f.line))) {
-            progress.echo("\n" + f.lemma.theory.path.implode + ":" + f.line + ": [" + f.lint + "] " + f.message)
+          for (finding <- findings.sortBy(finding => (finding.lemma.theory.node, finding.line))) {
+            progress.echo("\n" + finding.lemma.theory.path.implode + ":" + finding.line + ": [" + finding.lint + "] " +
+              finding.message)
           }
           progress.echo("\n" + findings.length + " findings")
           if (fix) apply_fixes(findings, progress)
