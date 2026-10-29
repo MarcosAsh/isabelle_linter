@@ -94,7 +94,7 @@ fun global ctxt = Proof_Context.init_global (Proof_Context.theory_of ctxt);
 fun simproc ctxt =
   let val cache = Synchronized.var "no_proper_subterm" Symtab.empty in
     Simplifier.make_simproc (global ctxt)
-      {name = "datatype_no_proper_subterm_cached", kind = Simproc,
+      {name = "datatype_no_proper_subterm_cached", kind = Simplifier.Simproc,
        lhss = [\<^term>\<open>(x :: 'a :: size) = y\<close>], proc = fn _ => proc cache, identifier = []}
   end;
 
@@ -107,7 +107,7 @@ val simproc_name = "datatype_no_proper_subterm";
 
 fun counting_simproc ctxt counter =
   Simplifier.make_simproc (Cached_No_Proper_Subterm.global ctxt)
-    {name = "datatype_no_proper_subterm_counted", kind = Simproc,
+    {name = "datatype_no_proper_subterm_counted", kind = Simplifier.Simproc,
      lhss = [\<^term>\<open>(x :: 'a :: size) = y\<close>],
      proc = fn _ => fn ctxt => fn ct =>
       let
@@ -134,7 +134,7 @@ fun variants limit n text st =
   let
     val pre = Toplevel.proof_of st;
     val (without, replaced) = states pre;
-    fun run state = Linter_Query.timed limit (Linter_Query.run_by_proof state text);
+    fun run state = Linter_Query.timed limit (Linter_Query.run_on state text);
     val _ = run pre;
     (*a fresh cache per run, as a fresh simproc instance per proof would have*)
     fun round i =
