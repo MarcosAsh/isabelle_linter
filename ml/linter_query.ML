@@ -54,6 +54,14 @@ fun verdict (Exn.Res _) = "closes"
           Timeout.TIMEOUT _ => "timeout"
         | _ => if String.isSubstring "Timeout" (Runtime.exn_message exn) then "timeout" else "fails");
 
+(*why a question failed, so that the log tells an interrupted proof from one that does not work*)
+fun failure (res as Exn.Exn exn) =
+      if verdict res <> "fails" then []
+      else
+        let val msg = Library.trim_line (XML.content_of (YXML.parse_body (Runtime.exn_message exn)))
+        in [("message", if size msg > 200 then String.substring (msg, 0, 200) else msg)] end
+  | failure _ = [];
+
 fun parse_methods thy text =
   let
     val toks = Token.explode (Thy_Header.get_keywords thy) Position.none text |> filter Token.is_proper;
@@ -493,7 +501,7 @@ fun register name check =
 
 val _ =
   register "linter_try" (fn limit => fn [text] => fn st =>
-    let val (res, t) = timed limit (run_by st text) in (verdict res, times t) end);
+    let val (res, t) = timed limit (run_by st text) in (verdict res, times t @ failure res) end);
 
 val _ =
   register "linter_time" (fn limit => fn [n, a, b] => fn st =>
@@ -546,7 +554,7 @@ val _ =
 
 val _ =
   register "linter_run" (fn limit => fn [text] => fn st =>
-    let val (res, t) = timed limit (run_text st text) in (verdict res, times t) end);
+    let val (res, t) = timed limit (run_text st text) in (verdict res, times t @ failure res) end);
 
 (*per B: verdict, ms, names A lacks, facts that differ*)
 fun compare_run limit st st_a (i, text) =
@@ -617,6 +625,6 @@ val _ =
 val _ =
   register "linter_try_del" (fn limit => fn text :: facts => fn st =>
     let val (res, t) = timed limit (run_on (without_simps facts st) text)
-    in (verdict res, times t) end);
+    in (verdict res, times t @ failure res) end);
 
 end;

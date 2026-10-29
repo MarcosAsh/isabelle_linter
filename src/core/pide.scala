@@ -158,11 +158,23 @@ object Pide {
       try {
         for (b <- parallel.grouped(batch max 1)) answers ++= ask(session, b, progress)
         for (q <- serial) answers ++= ask(session, List(q), progress)
+        answers ++= retry(session, name, parallel, answers, progress)
       }
       finally { log.foreach(write_log(_, name, round, answers)) }
       round = next(answers).filterNot(q => answers.contains(q.key)).distinctBy(_.key)
     }
     answers
+  }
+
+  /* a question cut short among many (its thread interrupted, by a stack overflow say, or given up
+    by the watchdog) gets one more try alone; what it answers then stands */
+  val lost: Set[String] = Set("interrupted", "unanswered")
+
+  private def retry(session: Headless.Session, name: String, questions: List[Question], answers: Answers,
+      progress: Progress): Answers = {
+    val again = questions.filter(q => lost(answers(q.key).verdict))
+    if (again.nonEmpty) progress.echo(name + ": asking " + again.length + " cut-short questions again, one at a time")
+    again.foldLeft(Map.empty: Answers)((as, q) => as ++ ask(session, List(q), progress))
   }
 
   /* one row per question: lint, function, key, args, verdict, then the answer's properties; a round
@@ -207,6 +219,7 @@ object Pide {
     val stats = new Stats(session)
     var answers: Answers = Map.empty
     var last = Time.now()
+    var reported = Time.now()
     try {
       while (answers.size < placed.length && Time.now() - last < watchdog && session.is_ready) {
         progress.expose_interrupt()
@@ -216,6 +229,11 @@ object Pide {
         for ((instance, q) <- placed if !answers.contains(q.key)) {
           answer(state.command_results(versions(q.theory), q.at), instance)
             .foreach { a => answers += (q.key -> a); last = Time.now() }
+        }
+        /* a long round writes nothing else, so say it is still going */
+        if (Time.now() - reported > Time.seconds(600)) {
+          progress.echo("  " + answers.size + " of " + placed.length + " answered")
+          reported = Time.now()
         }
       }
     }
