@@ -1,4 +1,5 @@
-/* faster_step: a `by` step that another method proves several times faster */
+/* The faster_step lint: a `by` step that another method proves several times faster. Edits
+   come from standard methods, the step's own facts, its subgoals and the simp rules it used. */
 
 package isabelle.isabelle_linter
 
@@ -8,18 +9,20 @@ import isabelle._
 object Faster_Step extends Lint {
   val name = "faster_step"
 
-  /* questions still to ask, or the faster method with both median times */
-  type Result = Either[List[Pide.Question], Option[(String, Long, Long)]]
+  /* A faster method, with the medians of the original and of it. */
+  sealed case class Faster(method: String, medians: Medians)
+
+  type Result = Either[List[Pide.Question], Option[Faster]]
 
 
   val methods: List[String] =
     List("simp", "auto", "blast", "fast", "fastforce", "force", "metis", "meson", "linarith", "presburger",
       "argo", "algebra")
 
-  /* they must close every subgoal left by the first method */
+  /* After `induction` or `cases`, these must close every subgoal left by the first method. */
   val closers: List[String] = List("simp_all", "auto", "(fastforce+)", "(force+)", "(blast+)")
 
-  /* the standard methods, some with the step's own facts, and the step without each fact */
+  /* The standard methods, some with the step's own facts, and the step without each fact. */
   def candidates(step: Step): List[String] = {
     val swaps =
       step.split match {
@@ -29,7 +32,7 @@ object Faster_Step extends Lint {
     (swaps ::: dropping(step)).filterNot(_ == step.methods).distinct
   }
 
-  /* keep `induction` or `cases`, change what closes the subgoals */
+  /* Keep `induction` or `cases`, change what closes the subgoals. */
   def closing(step: Step, first: String): List[String] = {
     val facts = step.facts.mkString(" ")
     val with_facts =
@@ -50,7 +53,7 @@ object Faster_Step extends Lint {
         "force simp: " + facts, "blast intro: " + facts).map("(" + _ + ")")
   }
 
-  /* the step's own methods without one of their facts */
+  /* The step's own methods without one of their facts. */
   def dropping(step: Step): List[String] = {
     val start = step.cmd.body.head.range.start
 
@@ -69,10 +72,11 @@ object Faster_Step extends Lint {
 
   def subgoal_closers(step: Step): List[String] = fact_methods(step) ::: methods
 
+  /* The answer gives the number n of subgoals and for each subgoal i the index sub_i of its closer. */
   def per_subgoal(step: Step, first: String, answer: Pide.Answer): Option[String] = {
     val closers = subgoal_closers(step)
     val n = answer.long("n").getOrElse(0L).toInt
-    val chosen = (1 to n).toList.map(i => answer.long("sub" + i).map(j => closers(j.toInt)))
+    val chosen = (1 to n).toList.map(i => answer.long("sub" + i).map(index => closers(index.toInt)))
 
     if (n < 2 || chosen.exists(_.isEmpty)) None
     else {
@@ -81,8 +85,8 @@ object Faster_Step extends Lint {
     }
   }
 
-  /* auto works on every subgoal; [1] keeps it to the first, and needs parentheses (`auto[1]` is
-    auto with an argument) */
+  /* auto works on every subgoal, and [1] keeps it to the first; it needs parentheses, as `auto[1]`
+     is auto with an argument. */
   def one_goal(method: String): String =
     if (method == "auto") "(auto)[1]"
     else if (method.startsWith("(auto ")) method + "[1]"
@@ -105,73 +109,82 @@ object Faster_Step extends Lint {
     }
 
 
-  /* Per step: time it, try the candidates with the original time over the speed-up as their limit,
-    then re-time the fastest against the original a few times, alone (the first times are noisy). */
-
+  /* Per step: time it as written, then search for a faster method if it is slow enough. */
   def check(lemma: Lemma, step: Step, answers: Pide.Answers, options: Options): Result = {
-    val speedup = options.real("faster_step_speedup")
     val original = try_by(lemma, step, step.methods, Time.seconds(options.real("linter_timeout")))
-
     answers.get(original.key) match {
       case None => Left(List(original))
-      case Some(a) if !a.closes || a.ms < options.real("faster_step_slow") * 1000 => Right(None)
-      case Some(a) =>
-        val limit = Time.ms((a.ms / speedup).toLong max 1L)
-        val split = step.split.map({ case (first, _) => first -> subgoals(lemma, step, first, limit) })
-        val rules = if (uses_simp(step)) Some(used_rules(lemma, step, options)) else None
-        val baseline = if (options.bool("faster_step_try0")) Some(try0(lemma, step, options)) else None
-        val tries = edits(step, split, rules, answers).map(m => m -> try_by(lemma, step, m, limit))
-        val (needed, every) =
-          if (options.bool("faster_step_exhaustive")) exhaustive(lemma, step, split, rules, a, answers, options)
-          else (Nil, Nil)
-        val missing =
-          (split.map(_._2).toList ::: rules.toList ::: baseline.toList ::: tries.map(_._2) ::: needed :::
-            every.map(_._2)).filterNot(q => answers.contains(q.key))
-
-        if (missing.nonEmpty) Left(missing)
-        else {
-          def best(ts: List[(String, Pide.Question)]): Option[String] =
-            ts.filter(t => answers(t._2.key).closes).sortBy(t => answers(t._2.key).ms).headOption.map(_._1)
-          val try0_proof = baseline.flatMap(q => try0_method(step, answers(q.key), limit))
-          confirm(lemma, step, best(tries), try0_proof, best(every), a, answers, options)
-        }
+      case Some(answer) if !answer.closes || answer.ms < options.real("faster_step_slow") * 1000 => Right(None)
+      case Some(answer) => search(lemma, step, answer, answers, options)
     }
   }
 
-  /* the fastest edit, and try0's proof and the exhaustive winner if asked for, are re-timed; only
-    the edit is reported, the others' timings are for the question log */
-  private def confirm(lemma: Lemma, step: Step, fastest: Option[String], try0_proof: Option[String],
-      every: Option[String], original: Pide.Answer, answers: Pide.Answers, options: Options): Result = {
-    val timings =
-      (fastest.toList ::: try0_proof.toList).distinct.map(m => timing(lemma, step, "time:", m, original, options)) :::
-        every.toList.map(timing(lemma, step, "exhaustive:time:", _, original, options))
+  /* Try each edit with the original's time over the speed-up as its limit, at least 1 ms, as the
+     prover ignores a smaller one. The fastest is re-timed, since the first times are noisy. */
+  private def search(lemma: Lemma, step: Step, original: Pide.Answer, answers: Pide.Answers,
+      options: Options): Result = {
+    val limit = Time.ms((original.ms / options.real("faster_step_speedup")).toLong max 1L)
+    val split = step.split.map({ case (first, _) => first -> subgoals(lemma, step, first, limit) })
+    val rules = if (uses_simp(step)) Some(used_rules(lemma, step, options)) else None
+    val try0_question = if (options.bool("faster_step_try0")) Some(try0(lemma, step, options)) else None
+    val tries = edits(step, split, rules, answers).map(method => method -> try_by(lemma, step, method, limit))
+    val (exhaustive_sources, exhaustive_tries) =
+      if (options.bool("faster_step_exhaustive")) exhaustive(lemma, step, split, rules, original, answers, options)
+      else (Nil, Nil)
+    val missing =
+      (split.map(_._2).toList ::: rules.toList ::: try0_question.toList ::: tries.map(_._2) :::
+        exhaustive_sources ::: exhaustive_tries.map(_._2)).filterNot(question => answers.contains(question.key))
 
-    timings.filterNot(q => answers.contains(q.key)) match {
-      case Nil => Right(fastest.flatMap(m => faster(m, answers(key(lemma, step, "time:" + m)), options)))
+    if (missing.nonEmpty) Left(missing)
+    else {
+      val try0_proof = try0_question.flatMap(question => try0_method(step, answers(question.key), limit))
+      confirm(lemma, step, fastest(tries, answers), try0_proof, fastest(exhaustive_tries, answers), original,
+        answers, options)
+    }
+  }
+
+  /* The label of the fastest try that closes. */
+  private def fastest[A](tries: List[(A, Pide.Question)], answers: Pide.Answers): Option[A] =
+    tries.filter({ case (_, question) => answers(question.key).closes })
+      .sortBy({ case (_, question) => answers(question.key).ms }).headOption.map(_._1)
+
+  /* The fastest edit is re-timed, and so are try0's proof and the exhaustive winner if asked for;
+     only the edit is reported, the others' timings are for the question log. */
+  private def confirm(lemma: Lemma, step: Step, winner: Option[String], try0_proof: Option[String],
+      exhaustive_winner: Option[String], original: Pide.Answer, answers: Pide.Answers, options: Options): Result = {
+    val timings =
+      (winner.toList ::: try0_proof.toList).distinct.map(timing(lemma, step, "time:", _, original, options)) :::
+        exhaustive_winner.toList.map(timing(lemma, step, "exhaustive:time:", _, original, options))
+
+    timings.filterNot(question => answers.contains(question.key)) match {
+      case Nil => Right(winner.flatMap(method => faster(method, answers(key(lemma, step, "time:" + method)), options)))
       case missing => Left(missing)
     }
   }
 
+  /* Each run gets twice the original's time. */
   private def timing(lemma: Lemma, step: Step, mark: String, method: String, original: Pide.Answer,
       options: Options): Pide.Question = {
     val runs = options.int("faster_step_runs").toString
     Pide.Question(key(lemma, step, mark + method), lemma.theory, step.goal.command, "linter_time",
-      List(runs, step.methods, method), Time.ms(original.ms * 2 max 1000L), serial = true)
+      List(runs, step.methods, method), Time.ms(original.ms * 2 max Pide.min_limit_ms), serial = true)
   }
 
-  private def faster(method: String, t: Pide.Answer, options: Options): Option[(String, Long, Long)] =
-    if (t.closes && t.ms2 * options.real("faster_step_speedup") < t.ms) Some((method, t.ms, t.ms2)) else None
+  private def faster(method: String, timing: Pide.Answer, options: Options): Option[Faster] =
+    if (timing.closes && timing.ms2 * options.real("faster_step_speedup") < timing.ms)
+      Some(Faster(method, timing.medians))
+    else None
 
-  /* the per-subgoal and `simp only:` edits join the others once their questions are answered */
+  /* The per-subgoal and `simp only:` edits join the others once their questions are answered. */
   private def edits(step: Step, split: Option[(String, Pide.Question)], rules: Option[Pide.Question],
       answers: Pide.Answers): List[String] = {
     val subgoal_edit =
       for {
-        (first, q) <- split
-        answer <- answers.get(q.key)
+        (first, question) <- split
+        answer <- answers.get(question.key)
         method <- per_subgoal(step, first, answer)
       } yield method
-    val simp_edit = rules.flatMap(q => answers.get(q.key)).flatMap(simp_only(step, _))
+    val simp_edit = rules.flatMap(question => answers.get(question.key)).flatMap(simp_only(step, _))
     (candidates(step) ::: subgoal_edit.toList ::: simp_edit.toList).filterNot(_ == step.methods).distinct
   }
 
@@ -190,42 +203,40 @@ object Faster_Step extends Lint {
     Pide.Question(key(lemma, step, methods), lemma.theory, step.goal.command, "linter_try", List(methods), timeout)
 
 
-  /* the exhaustive baseline: every edit of every operator, whatever the step's shape (a split step
-    gets the whole-step methods too, a step without simp `simp only:`), with the original's time
-    as the limit; the per-subgoal edit takes for each subgoal the fastest closer, each closer
-    timed on each subgoal in full rather than within the best time so far. Keys say exhaustive;
-    first the questions the edits come from, then the edits */
-
+  /* The exhaustive baseline, for the question log: every edit of every operator whatever the step's
+     shape, with the original's time as limit; returns the questions the edits come from, and the tries. */
   private def exhaustive(lemma: Lemma, step: Step, split: Option[(String, Pide.Question)],
       simp_rules: Option[Pide.Question], original: Pide.Answer, answers: Pide.Answers,
       options: Options): (List[Pide.Question], List[(String, Pide.Question)]) = {
     val limit = Time.ms(original.ms max 1L)
     val rules =
       simp_rules.getOrElse(used_rules(lemma, step, options).copy(key = key(lemma, step, "exhaustive:rules")))
+
+    /* Each closer is timed on each subgoal in full, not within the best time so far. */
     val closers = subgoal_closers(step).zipWithIndex
-    val pairs =
+    val closer_tries =
       for {
-        (first, q) <- split.toList
-        n <- answers.get(q.key).flatMap(_.long("n")).toList
+        (first, question) <- split.toList
+        n <- answers.get(question.key).flatMap(_.long("n")).toList
         i <- (1 to n.toInt).toList
-      } yield i -> closers.map({ case (c, j) => j -> subgoal(lemma, step, first, i, c, limit) })
+      } yield i -> closers.map({ case (closer, index) => index -> subgoal(lemma, step, first, i, closer, limit) })
+    val all_answered = closer_tries.forall(_._2.forall({ case (_, question) => answers.contains(question.key) }))
 
     val subgoal_edit =
       for {
         (first, _) <- split
-        if pairs.forall(_._2.forall(p => answers.contains(p._2.key)))
-        fastest = pairs.flatMap({ case (i, ps) =>
-          ps.filter(p => answers(p._2.key).closes).sortBy(p => answers(p._2.key).ms).headOption
-            .map(p => ("sub" + i, p._1.toString)) })
-        method <- per_subgoal(step, first, Pide.Answer("closes", ("n" -> pairs.length.toString) :: fastest))
+        if all_answered
+        chosen = closer_tries.flatMap({ case (i, tries) => fastest(tries, answers).map(index => ("sub" + i, index.toString)) })
+        method <- per_subgoal(step, first, Pide.Answer("closes", ("n" -> closer_tries.length.toString) :: chosen))
       } yield method
     val methods =
       (edits(step, split, Some(rules), answers) ::: whole(step) ::: subgoal_edit.toList)
         .filterNot(_ == step.methods).distinct
 
-    (rules :: pairs.flatMap(_._2.map(_._2)),
-      methods.map(m => m -> Pide.Question(key(lemma, step, "exhaustive:" + m), lemma.theory, step.goal.command,
-        "linter_try", List(m), limit)))
+    val tries =
+      methods.map(method => method -> Pide.Question(key(lemma, step, "exhaustive:" + method), lemma.theory,
+        step.goal.command, "linter_try", List(method), limit))
+    (rules :: closer_tries.flatMap(_._2.map(_._2)), tries)
   }
 
   private def subgoal(lemma: Lemma, step: Step, first: String, i: Int, closer: String, limit: Time): Pide.Question =
@@ -233,8 +244,8 @@ object Faster_Step extends Lint {
       "linter_subgoal", List(first, i.toString, closer), limit)
 
 
-  /* the try0 baseline: Isabelle's try0 on the same goal; its fastest proof is re-timed like an
-    edit if try0 timed it under the same limit */
+  /* The try0 baseline: Isabelle's try0 on the same goal. Its fastest proof is re-timed like an
+     edit if try0 timed it under the same limit. */
 
   private def try0(lemma: Lemma, step: Step, options: Options): Pide.Question = {
     val per_method = Time.seconds(options.real("faster_step_try0_timeout")).ms.toString
@@ -243,7 +254,8 @@ object Faster_Step extends Lint {
   }
 
   private def try0_method(step: Step, answer: Pide.Answer, limit: Time): Option[String] =
-    answer.get("method").filter(m => answer.closes && m != step.methods && answer.long("method_ms").exists(_ < limit.ms))
+    answer.get("method").filter(method =>
+      answer.closes && method != step.methods && answer.long("method_ms").exists(_ < limit.ms))
 
 
   /* lint interface */
@@ -252,17 +264,18 @@ object Faster_Step extends Lint {
     for {
       lemma <- lemmas
       step <- lemma.steps
-      q <- check(lemma, step, answers, options).left.getOrElse(Nil)
-    } yield q
+      question <- check(lemma, step, answers, options).left.getOrElse(Nil)
+    } yield question
 
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     for {
       lemma <- lemmas
       step <- lemma.steps
-      (method, before, after) <- check(lemma, step, answers, options).toOption.flatten.toList
+      faster <- check(lemma, step, answers, options).toOption.flatten.toList
     } yield {
-      val message = "`by " + method + "` takes " + after + " ms instead of " + before + " ms for `by " + step.methods + "`"
-      val edit = step.cmd.range -> ("by " + method)
+      val message = "`by " + faster.method + "` takes " + faster.medians.after + " ms instead of " +
+        faster.medians.before + " ms for `by " + step.methods + "`"
+      val edit = step.cmd.range -> ("by " + faster.method)
       Finding(name, lemma, lemma.line(step.cmd.range.start), message, Some(lemma.replace_all(List(edit))), Some(edit))
     }
 }

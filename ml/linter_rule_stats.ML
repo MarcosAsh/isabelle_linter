@@ -1,20 +1,7 @@
 (*  Title:      isabelle_linter/ml/linter_rule_stats.ML
 
-Print function for an Isabelle built with etc/simpstats.patch. Args: INSTANCE, TIMEOUT_MS, then
-
-  linter_rule_stats TEXT   run the lemma TEXT from the state before it, with the rule statistics
-                           on. Each answer is lines of tab-separated fields:
-                           rules: the [simp] rules of the context before it that the net offered:
-                             name, candidates, matches, rewrites, microseconds in failed tries of
-                             a conditional rule, 1 if it is conditional
-                           procs: the simprocs called: name, calls, rewrites, microseconds inside
-                           classical: the rules the classical reasoner tried ("classical") or the
-                             net offered to blast ("blast"): kind, name, tries, unified tries,
-                             1 if the lemma's proof uses the rule
-                           proved: 1 if the lemma finished, so that its proof is known
-
-TEXT must name the lemma, since an unnamed result is not kept. The counts come back even when
-the lemma fails or runs out of time.
+Print function for an Isabelle built with etc/simpstats.patch: how often a lemma's proof tries
+each simp rule, simproc and classical rule, for simp_hygiene.
 *)
 
 structure Linter_Rule_Stats =
@@ -38,7 +25,7 @@ fun new_facts st0 st =
     fun added f = Facts.dest_static false [f st0] (f st);
   in maps #2 (added global_facts @ added local_facts) end;
 
-(*the named theorems the lemma's proof uses*)
+(*The named theorems the lemma's proof uses.*)
 fun run st0 text () =
   let
     val st = Linter_Query.run_state st0 text ();
@@ -50,8 +37,8 @@ fun run st0 text () =
 
 fun kind k (((k', _), _): Rule_Statistics.key * Rule_Statistics.counts) = k = k';
 
-(*a rule without a name, like an equation of fun, counts as "??." and its head constant, or
-  as "??.unknown" if it has none*)
+(*A rule without a name, like an equation of fun, counts as "??." and its head constant, or as
+  "??.unknown" if it has none.*)
 fun named (((_, (name, _)), _): Rule_Statistics.key * Rule_Statistics.counts) =
   name <> "??.unknown";
 
@@ -62,7 +49,7 @@ fun statistics_name (name, thm) =
       SOME (Const (c, _)) => ("??." ^ c, 0)
     | _ => name);
 
-(*each [simp] rule, and whether it is conditional; a fact can give several rules*)
+(*Each [simp] rule, and whether it is conditional; a fact can give several rules.*)
 fun simp_rules st =
   let
     val simps = Raw_Simplifier.dest_simps (simpset_of (Toplevel.context_of st));
@@ -71,6 +58,8 @@ fun simp_rules st =
       Thm_Name.Table.map_default (statistics_name (name, thm), false) (conditional thm);
   in fold add simps Thm_Name.Table.empty end;
 
+(*The [simp] rules of the context before the lemma that the net offered, each with its tries,
+  matches, rewrites, microseconds in the failed tries of a conditional rule, and that condition.*)
 fun rule_line simps ((_, name), {tried, matched, succeeded, time}) =
   Thm_Name.Table.lookup simps name |> Option.map (fn conditional =>
     line (Thm_Name.print name :: map string_of_int [tried, matched, succeeded] @
@@ -79,6 +68,7 @@ fun rule_line simps ((_, name), {tried, matched, succeeded, time}) =
 fun proc_line ((_, (name, _)), {tried, succeeded, time, ...}: Rule_Statistics.counts) =
   line [name, string_of_int tried, string_of_int succeeded, us time];
 
+(*Kind "classical" for the classical reasoner's tries, "blast" for the net's offers to blast.*)
 fun classical_line used ((kind, name), {tried, matched, ...}: Rule_Statistics.counts) =
   line [kind, Thm_Name.print name, string_of_int tried, string_of_int matched,
     flag (Thm_Name.Set.member used name)];
@@ -94,6 +84,8 @@ fun statistics st key used =
      ("classical", cat_lines (map (classical_line used) classical))]
   end;
 
+(*linter_rule_stats TEXT: the lemma TEXT, which must be named, with the statistics on; the counts
+  come back even if it fails, and proved says whether it finished.*)
 val _ =
   Linter_Query.register "linter_rule_stats" (fn limit => fn [text] => fn st =>
     let

@@ -1,4 +1,5 @@
-/* datatype_plugins: plugins of a `datatype` whose content nothing later uses */
+/* The datatype_plugins lint: plugins of a `datatype` whose content nothing later uses, deleted
+   with `plugins del:` if that makes the datatype faster. */
 
 package isabelle.isabelle_linter
 
@@ -10,18 +11,20 @@ import scala.util.matching.Regex
 object Datatype_Plugins extends Lint {
   val name = "datatype_plugins"
 
-  /* questions to ask, or the plugins to delete with both median times */
-  type Result = Either[List[Pide.Question], Option[(List[String], Long, Long)]]
+  /* The plugins to delete, with the medians of the datatype with and without them. */
+  sealed case class Fix(delete: List[String], medians: Medians)
+
+  type Result = Either[List[Pide.Question], Option[Fix]]
 
   val plugins: List[String] = List("code", "extraction", "lifting", "quickcheck", "size", "transfer")
 
-  /* quickcheck is also a command, so it needs quotes */
-  def plugins_del(ps: List[String]): String =
-    "plugins del: " + ps.map(p => if (p == "quickcheck") quote(p) else p).mkString(" ")
+  /* quickcheck is also a command, so it needs quotes. */
+  def plugins_del(delete: List[String]): String =
+    "plugins del: " + delete.map(plugin => if (plugin == "quickcheck") quote(plugin) else plugin).mkString(" ")
 
   private val transfer_words = """transfer|lifting|lift_definition|parametric|quotient|\brel_|corec""".r
 
-  /* later text that may use a plugin's content without naming it */
+  /* Later text that may use a plugin's content without naming it. */
   val unnamed_uses: Map[String, Regex] = Map(
     "code" -> """(\b|_)code|\bCode|\b(value|eval|normalization|approximation|derive)\b""".r,
     "extraction" -> """\b(extract|realizers?|realizability)\b|Extraction""".r,
@@ -31,7 +34,7 @@ object Datatype_Plugins extends Lint {
     "transfer" -> transfer_words)
 
 
-  /* an options group like `(discs_sels)`, not type arguments like `('a, 'b)` */
+  /* An options group like `(discs_sels)`, not type arguments like `('a, 'b)`. */
   def options_group(cmd: Cmd): List[Tok] =
     cmd.body match {
       case t :: u :: _ if t.is("(") && (u.is("plugins") || u.is("discs_sels")) => Syntax.take_group(cmd.body, "(", ")")._1
@@ -40,18 +43,18 @@ object Datatype_Plugins extends Lint {
 
   def has_plugins(cmd: Cmd): Boolean = options_group(cmd).exists(_.is("plugins"))
 
-  def deleting(lemma: Lemma, ps: List[String]): (Text.Range, String) = {
+  def deleting(lemma: Lemma, delete: List[String]): (Text.Range, String) = {
     val cmd = lemma.cmds.head
-    val del = plugins_del(ps)
+    val del = plugins_del(delete)
     options_group(cmd) match {
       case paren :: _ => Text.Range(paren.range.stop) -> (del + ", ")
       case Nil => Text.Range(cmd.tokens.head.range.stop) -> (" (" + del + ")")
     }
   }
 
-  def edited(lemma: Lemma, ps: List[String]): String = lemma.replace_all(List(deleting(lemma, ps)))
+  def edited(lemma: Lemma, delete: List[String]): String = lemma.replace_all(List(deleting(lemma, delete)))
 
-  /* the type and constructor names of each spec of `t = C1 ... | C2 ... and u = ...` */
+  /* The type and constructor names of each spec of `t = C1 ... | C2 ... and u = ...`. */
   def names(cmd: Cmd): List[String] = {
     val body = cmd.body.drop(options_group(cmd).length)
     val specs = Syntax.split_and(body.takeWhile(t => !(t.token.is_keyword && (t.is("for") || t.is("where")))))
@@ -61,7 +64,7 @@ object Datatype_Plugins extends Lint {
     }.distinct
   }
 
-  /* `disc: C args`, where C may be a string with a mixfix after it */
+  /* An alternative is `C args` or `disc: C args`, where C may be a string with a mixfix after it. */
   private def constructors(rhs: List[Tok]): List[String] = {
     def alternatives(toks: List[Tok]): List[List[Tok]] = {
       var depth = 0
@@ -71,65 +74,70 @@ object Datatype_Plugins extends Lint {
       }.filter(_.nonEmpty)
     }
     alternatives(rhs).flatMap {
-      case d :: c :: n :: _ if c.is(":") => List(d.source, n.source)
-      case n :: _ => List(n.source)
+      case disc :: colon :: ctor :: _ if colon.is(":") => List(disc.source, ctor.source)
+      case ctor :: _ => List(ctor.source)
       case Nil => Nil
     }.map(Library.perhaps_unquote).filter(_.nonEmpty)
   }
 
 
-  /* later commands on the type: a nesting datatype needs all plugins, a fun needs size */
+  /* Later commands on the type: a nesting datatype needs all plugins, a fun needs size. */
   sealed case class Later(texts: List[String], nested: Boolean, recursion: Boolean)
 
   def later(lemma: Lemma): Later = {
     val texts = lemma.later
     val mentions = Downstream.words(names(lemma.cmds.head))
     def on_it(commands: Set[String]): Boolean =
-      mentions.exists(m => Downstream.commands(texts, commands).exists(m.findFirstIn(_).isDefined))
+      mentions.exists(regex => Downstream.commands(texts, commands).exists(regex.findFirstIn(_).isDefined))
     Later(texts, on_it(Set("datatype", "codatatype")), on_it(Set("fun", "function")))
   }
 
   def needed(later: Later, plugin: String, missing: List[String]): Option[String] = {
     val named = Downstream.words(missing).flatMap(Downstream.find(later.texts, _))
     val unnamed = Downstream.find(later.texts, unnamed_uses(plugin))
-    (named orElse unnamed).map(w => "`" + w + "` later")
+    (named orElse unnamed).map(word => "`" + word + "` later")
       .orElse(if (later.nested) Some("a later datatype uses the type") else None)
       .orElse(if (plugin == "size" && later.recursion) Some("a later `fun` on the type") else None)
   }
 
-  /* quickcheck's generators are code */
+  /* Why each plugin must stay; quickcheck's generators are code. */
   def reasons(lemma: Lemma, missing: Map[String, List[String]]): Map[String, String] = {
-    val l = later(lemma)
-    val direct = missing.toList.flatMap({ case (p, ms) => needed(l, p, ms).map(p -> _) }).toMap
+    val uses = later(lemma)
+    val direct =
+      missing.toList.flatMap({ case (plugin, names) => needed(uses, plugin, names).map(plugin -> _) }).toMap
     direct.get("quickcheck") match {
       case Some(_) if !direct.contains("code") => direct + ("code" -> "quickcheck needs it")
       case _ => direct
     }
   }
 
-  def plan(lemma: Lemma, answer: Pide.Answer): (List[String], Map[String, String]) = {
-    val runs = plugins.zipWithIndex.map({ case (p, i) => p -> Definitions.compared(answer, i + 1) })
-    val failing = runs.collect({ case (p, None) => p -> "the datatype fails without it" }).toMap
-    val kept = failing ++ reasons(lemma, runs.collect({ case (p, Some(c)) => p -> c.missing }).toMap)
-    (plugins.filterNot(kept.contains), kept)
+  /* The plugins to delete, and why each other one stays. */
+  sealed case class Plan(delete: List[String], kept: Map[String, String])
+
+  def plan(lemma: Lemma, answer: Pide.Answer): Plan = {
+    val runs = plugins.zipWithIndex.map({ case (plugin, i) => plugin -> Definitions.compared(answer, i + 1) })
+    val failing = runs.collect({ case (plugin, None) => plugin -> "the datatype fails without it" }).toMap
+    val missing = runs.collect({ case (plugin, Some(compared)) => plugin -> compared.missing }).toMap
+    val kept = failing ++ reasons(lemma, missing)
+    Plan(plugins.filterNot(kept.contains), kept)
   }
 
 
-  /* per datatype: as written, without each plugin alone; delete those nothing later needs */
-
+  /* Per datatype: run it as written and without each plugin alone, then delete those that nothing
+     later needs. */
   def check(lemma: Lemma, answers: Pide.Answers, options: Options): Result = {
-    val q = Definitions.names(lemma, plugins.map(p => edited(lemma, List(p))), options)
-    answers.get(q.key) match {
-      case None => Left(List(q))
-      case Some(a) if !a.closes => Right(None)
-      case Some(a) =>
-        plan(lemma, a)._1 match {
+    val question = Definitions.names(lemma, plugins.map(plugin => edited(lemma, List(plugin))), options)
+    answers.get(question.key) match {
+      case None => Left(List(question))
+      case Some(answer) if !answer.closes => Right(None)
+      case Some(answer) =>
+        plan(lemma, answer).delete match {
           case Nil => Right(None)
           case delete =>
-            val t = Definitions.timing(lemma, edited(lemma, delete), a, options)
-            answers.get(t.key) match {
-              case None => Left(List(t))
-              case Some(b) => Right(if (Definitions.saves(b, options)) Some((delete, b.ms, b.ms2)) else None)
+            val timing = Definitions.timing(lemma, edited(lemma, delete), answer, options)
+            answers.get(timing.key) match {
+              case None => Left(List(timing))
+              case Some(times) => Right(if (Definitions.saves(times, options)) Some(Fix(delete, times.medians)) else None)
             }
         }
     }
@@ -137,7 +145,8 @@ object Datatype_Plugins extends Lint {
 
 
   override def targets(checked: Pide.Checked): List[Lemma] =
-    checked.definitions.filter(d => d.ok && Set("datatype", "codatatype")(d.cmds.head.name) && !has_plugins(d.cmds.head))
+    checked.definitions.filter(definition =>
+      definition.ok && Set("datatype", "codatatype")(definition.cmds.head.name) && !has_plugins(definition.cmds.head))
 
   def ask(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Pide.Question] =
     lemmas.flatMap(check(_, answers, options).left.getOrElse(Nil))
@@ -145,16 +154,16 @@ object Datatype_Plugins extends Lint {
   def report(lemmas: List[Lemma], answers: Pide.Answers, options: Options): List[Finding] =
     for {
       lemma <- lemmas
-      (delete, before, after) <- check(lemma, answers, options).toOption.flatten.toList
-    } yield finding(lemma, delete, before, after, answers)
+      fix <- check(lemma, answers, options).toOption.flatten.toList
+    } yield finding(lemma, fix, answers)
 
-  private def finding(lemma: Lemma, delete: List[String], before: Long, after: Long, answers: Pide.Answers): Finding = {
-    val edit = deleting(lemma, delete)
-    val kept = plan(lemma, answers(Definitions.names_key(lemma)))._2.toList.sortBy(_._1)
+  private def finding(lemma: Lemma, fix: Fix, answers: Pide.Answers): Finding = {
+    val edit = deleting(lemma, fix.delete)
+    val kept = plan(lemma, answers(Definitions.names_key(lemma))).kept.toList.sortBy(_._1)
     val message =
-      "`" + lemma.cmds.head.name + " (" + plugins_del(delete) + ")` takes " + after +
-        " ms instead of " + before + " ms (medians, alone)" +
-        kept.map({ case (p, why) => "\n  keeps " + p + ": " + why }).mkString
+      "`" + lemma.cmds.head.name + " (" + plugins_del(fix.delete) + ")` takes " + fix.medians.after +
+        " ms instead of " + fix.medians.before + " ms (medians, alone)" +
+        kept.map({ case (plugin, why) => "\n  keeps " + plugin + ": " + why }).mkString
     Finding(name, lemma, lemma.line, message, Some(lemma.replace_all(List(edit))), Some(edit))
   }
 }
