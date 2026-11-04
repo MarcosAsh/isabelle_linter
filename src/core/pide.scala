@@ -72,7 +72,7 @@ object Pide {
       val hol = structure.build_requirements(List(logic)).contains("HOL")
       load_queries(session, hol)
 
-      val checked = session.use_theories(theories, progress = progress)
+      val checked = use_theories(session, session_name, theories, progress)
       val state = session.get_state()
 
       /* Imported theories outside every heap are checked too, but only the session's own are linted. */
@@ -90,6 +90,22 @@ object Pide {
     }
     finally { watch.stop(); session.stop() }
   }
+
+  /* use_theories waits forever for a prover that dies while loading, so its progress stops then. */
+  private class Alive(session: Session, outer: Progress) extends Progress {
+    override def verbose: Boolean = outer.verbose
+    override def output(msgs: Progress.Output): Unit = outer.output(msgs)
+    override def nodes_status(nodes_status: Progress.Nodes_Status): Unit = outer.nodes_status(nodes_status)
+    override def stopped: Boolean = outer.stopped || !session.is_ready
+  }
+
+  private def use_theories(session: Headless.Session, session_name: String, theories: List[String],
+      progress: Progress): Headless.Use_Theories_Result =
+    try session.use_theories(theories, progress = new Alive(session, progress))
+    catch {
+      case exn: Throwable if Exn.is_interrupt(exn) && !session.is_ready =>
+        error("Prover died loading " + session_name + ", prover log:\n" + session.syslog.content())
+    }
 
   /* Pass on the prover's own output and its exit as warnings: it can die, of running out of
      memory for instance, and a dead prover is otherwise silent. */
