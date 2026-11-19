@@ -54,6 +54,13 @@ structure Diagnostic where
   ms : Nat
   deriving ToJson
 
+/-- How often `simp` tried a rule in one theorem, and how often it rewrote with it. -/
+structure Rule where
+  name : String
+  tried : Nat
+  used : Nat
+  deriving ToJson
+
 /-- A theorem as loaded: the state to check it from, and the goal each step closed. -/
 structure Loaded where
   decl : Decl
@@ -378,6 +385,47 @@ def runOnce (state : State) (l : Loaded) (edits : Array Edit) (timeoutMs : Nat) 
     | some message => return ("fails", ms, message)
     | none => return ("closes", ms, "")
 
+/-- The rules under "tried theorems" in simp's diagnostics, as `name ↦ tried, succeeded: used`. -/
+def triedRules (message : String) : Array Rule := Id.run do
+  let mut found := #[]
+  let mut tried := false
+  for line in message.splitOn "\n" do
+    if line.contains "theorems" && line.trimAsciiEnd.toString.endsWith ":" then
+      tried := (line.splitOn "[simp] tried theorems").length == 2
+    else if tried then
+      if let [head, counts] := line.splitOn " ↦ " then
+        let name := (head.splitOn "[simp] ").getLast!
+        let number (s : String) : Nat := (s.takeWhile Char.isDigit).toString.toNat!
+        let used := match counts.splitOn "succeeded: " with
+          | [_, n] => number n
+          | _ => 0
+        found := found.push { name, tried := number counts, used }
+  return found
+
+/-- Check the theorem as written with simp's diagnostics on, and add up its counts per rule. -/
+def ruleStats (state : State) (l : Loaded) (timeoutMs : Nat) : IO (String × Nat × Array Rule) := do
+  let some before := l.before | return ("error", 0, #[])
+  let counting (scope : Command.Scope) : Command.Scope :=
+    { scope with opts := pp.fullNames.set (diagnostics.threshold.set (diagnostics.set scope.opts true) 0) true }
+  let scopes := match before.scopes with
+    | scope :: rest => counting scope :: rest
+    | [] => []
+  let source := sub state.text l.decl.range.start l.decl.range.stop
+  let inputCtx := Parser.mkInputContext source state.file
+  let (late, ms, result) ← timed timeoutMs fun cancel =>
+    step inputCtx { before with messages := {}, scopes } {} (some cancel)
+  if late then return ("timeout", ms, #[])
+  let .ok (_, after, _) := result | return ("fails", ms, #[])
+  let mut totals : Std.HashMap String Rule := {}
+  for message in after.messages.toList do
+    for rule in triedRules (← message.data.toString) do
+      let sum := match totals[rule.name]? with
+        | some r => { r with tried := r.tried + rule.tried, used := r.used + rule.used }
+        | none => rule
+      totals := totals.insert rule.name sum
+  let verdict := if (← failure? after.messages).isNone then "closes" else "fails"
+  return (verdict, ms, totals.toArray.map (·.2) |>.qsort (·.name < ·.name))
+
 /-- Run `tactic` on the goal a step closed. Returns the verdict, the ms and the messages it wrote. -/
 def tacticOnce (ctx : ContextInfo) (ti : TacticInfo) (tactic : String) (timeoutMs : Nat) :
     IO (String × Nat × Array String) := do
@@ -446,6 +494,10 @@ def answer (state : State) (question : Json) : IO Json := do
     return Json.mkObj [("response", "answer"), ("answer", Json.mkObj
       [("key", key), ("verdict", "closes"), ("ms", toJson (#[] : Array Nat)), ("message", ""),
         ("suggestions", toJson found)])]
+  if what == "stats" then
+    let (verdict, ms, rules) ← ruleStats state l timeout
+    return Json.mkObj [("response", "answer"), ("answer", Json.mkObj
+      [("key", key), ("verdict", verdict), ("ms", toJson #[ms]), ("message", ""), ("rules", toJson rules)])]
   let mut times := #[]
   for _ in [0:max runs 1] do
     let (verdict, ms, message) ← once

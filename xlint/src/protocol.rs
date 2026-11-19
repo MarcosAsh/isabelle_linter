@@ -97,6 +97,16 @@ pub enum Ask {
     Step { step: usize, text: String },
     /// More candidates for the step, from the prover's own tools.
     Suggest { step: usize },
+    /// Check the declaration as written and count what its simplifier calls tried.
+    Stats,
+}
+
+/// How often the simplifier tried a rule in one declaration, and how often it rewrote with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rule {
+    pub name: String,
+    pub tried: u64,
+    pub used: u64,
 }
 
 /// A serial question is asked alone, so that other questions do not distort its times.
@@ -123,6 +133,8 @@ pub struct Answer {
     pub message: String,
     #[serde(default)]
     pub suggestions: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
 impl Answer {
@@ -133,6 +145,7 @@ impl Answer {
             ms: Vec::new(),
             message: String::new(),
             suggestions: Vec::new(),
+            rules: Vec::new(),
         }
     }
 

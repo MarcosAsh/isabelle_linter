@@ -63,6 +63,7 @@ impl Fake {
             ms,
             message: String::new(),
             suggestions: Vec::new(),
+            rules: Vec::new(),
         }
     }
 }

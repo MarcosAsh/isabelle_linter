@@ -22,6 +22,8 @@ pub struct Options {
     pub faster_step_slow_ms: u64,
     /// How many times faster a step's replacement has to be.
     pub faster_step_speedup: f64,
+    /// `simp_hygiene` reports a rule once the file's proofs try it this often.
+    pub simp_hygiene_min: u64,
 }
 
 impl Default for Options {
@@ -34,6 +36,7 @@ impl Default for Options {
             unused_ahead: 4,
             faster_step_slow_ms: 1000,
             faster_step_speedup: 2.0,
+            simp_hygiene_min: 100,
         }
     }
 }
@@ -60,6 +63,7 @@ impl Options {
                     .parse()
                     .map_err(|_| format!("bad value for {name}: {value}"))?
             }
+            "simp_hygiene_min" => self.simp_hygiene_min = value.parse().map_err(bad)?,
             _ => return Err(format!("unknown option {name}")),
         }
         Ok(())
