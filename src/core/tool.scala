@@ -27,16 +27,33 @@ object Tool {
     else Text.Range(lemma.start, lemma.stop) -> findings.head.fix.get
   }
 
+  /* The prover reads Unicode characters as symbols like \<epsilon>, so its offsets are not the
+     file's. Maps an offset in the text as the prover read it to the file's. */
+  def file_offsets(text: String): Int => Int =
+    if (Symbol.encode(text) == text) identity
+    else {
+      val offsets = new scala.collection.mutable.ArrayBuffer[Int]
+      var offset = 0
+      for (symbol <- Symbol.explode(text)) {
+        offsets ++= List.fill(Symbol.encode(symbol).length)(offset)
+        offset += symbol.length
+      }
+      offsets += offset
+      offsets
+    }
+
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
     for ((theory, theory_findings) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
       val path = theory.path
       val text = File.read(path)
       val checked = theory_findings.head.lemma.text
+      val offset = file_offsets(text)
       val lemmas = theory_findings.groupBy(_.lemma.start).values.toList
       val fixed =
         lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (edited, (range, replacement)) =>
-          if (range.substring(edited) != range.substring(checked)) error("File changed: " + path)
-          edited.substring(0, range.start) + replacement + edited.substring(range.stop)
+          val place = Text.Range(offset(range.start), offset(range.stop))
+          if (Symbol.encode(place.substring(edited)) != range.substring(checked)) error("File changed: " + path)
+          edited.substring(0, place.start) + replacement + edited.substring(place.stop)
         }
       File.write(path, fixed)
       progress.echo("Fixed " + lemmas.length + " lemmas (" + theory_findings.length + " findings) in " + path.implode)
