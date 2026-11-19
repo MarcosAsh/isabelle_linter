@@ -98,6 +98,7 @@ fn decl(key: &str, source: &str, pieces: &[(&str, &str)]) -> Decl {
     Decl {
         key: key.to_string(),
         name: key.to_string(),
+        kind: String::new(),
         range: Range {
             start: 0,
             stop: source.len(),

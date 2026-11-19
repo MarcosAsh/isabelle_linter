@@ -5,8 +5,16 @@ use crate::protocol::{Ask, Decl, Edit, Piece, Question, Range};
 
 pub struct Unused;
 
-/// A piece that changes the statement is reported, but never part of the fix.
-const STATEMENT: &str = "assumption";
+/// The same search over the file's imports, each checked by loading the whole file again.
+pub struct UnusedImports;
+
+const IMPORTS: &str = "imports";
+
+/// Reported but never fixed. An assumption changes the statement, and an import that importers
+/// see can only be judged with them.
+fn kept(kind: &str) -> bool {
+    kind == "assumption" || kind == "public import"
+}
 /// A piece other deletions can free, like a `have` nothing uses any more.
 const FREED: &str = "have";
 
@@ -106,7 +114,7 @@ impl Pieces<'_> {
         let kind = |i: &usize| self.decl.pieces[*i].kind.as_str();
         let (unneeded, needed): (Vec<usize>, Vec<usize>) = all.iter().partition(|i| closes(i));
         let (statement, others): (Vec<usize>, Vec<usize>) =
-            unneeded.iter().partition(|i| kind(i) == STATEMENT);
+            unneeded.iter().partition(|i| kept(kind(i)));
         let freeable: Vec<usize> = needed.into_iter().filter(|i| kind(i) == FREED).collect();
 
         let kept = self.combine(&[], &others)?;
@@ -208,7 +216,7 @@ fn fix(decl: &Decl, pieces: &[usize]) -> Vec<usize> {
     pieces
         .iter()
         .copied()
-        .filter(|&i| decl.pieces[i].kind != STATEMENT)
+        .filter(|&i| !kept(&decl.pieces[i].kind))
         .collect()
 }
 
@@ -216,12 +224,11 @@ fn describe(piece: &Piece) -> String {
     format!("  {} `{}` (line {})", piece.kind, piece.text, piece.line)
 }
 
-fn finding(decl: &Decl, unneeded: &Unneeded) -> Finding {
+fn finding(lint: &str, decl: &Decl, unneeded: &Unneeded) -> Finding {
     let mut pieces = unneeded.pieces.clone();
     pieces.sort();
-    let (statement, others): (Vec<usize>, Vec<usize>) = pieces
-        .iter()
-        .partition(|&&i| decl.pieces[i].kind == STATEMENT);
+    let (statement, others): (Vec<usize>, Vec<usize>) =
+        pieces.iter().partition(|&&i| kept(&decl.pieces[i].kind));
     let mut lines = Vec::new();
     if !others.is_empty() {
         lines.push("not needed:".to_string());
@@ -233,17 +240,50 @@ fn finding(decl: &Decl, unneeded: &Unneeded) -> Finding {
         ));
     }
     if !statement.is_empty() {
-        lines.push("not needed, but removing them changes the statement:".to_string());
+        lines.push(if decl.kind == IMPORTS {
+            "not needed here, but the importers were not checked:".to_string()
+        } else {
+            "not needed, but removing them changes the statement:".to_string()
+        });
         lines.extend(statement.iter().map(|&i| describe(&decl.pieces[i])));
     }
     let edits = deletions(decl, &others);
     Finding {
-        lint: "unused".to_string(),
+        lint: lint.to_string(),
         decl: decl.key.clone(),
         line: decl.line,
         message: lines.join("\n"),
         edits,
     }
+}
+
+fn chosen(decls: &[Decl], imports: bool) -> impl Iterator<Item = &Decl> {
+    decls
+        .iter()
+        .filter(move |d| d.ok && (d.kind == IMPORTS) == imports)
+}
+
+fn ask(decls: &[Decl], imports: bool, answers: &Answers, options: &Options) -> Vec<Question> {
+    chosen(decls, imports)
+        .flat_map(|d| check(d, answers, options).err().unwrap_or_default())
+        .collect()
+}
+
+fn report(
+    lint: &str,
+    decls: &[Decl],
+    imports: bool,
+    answers: &Answers,
+    options: &Options,
+) -> Vec<Finding> {
+    chosen(decls, imports)
+        .filter_map(|d| {
+            check(d, answers, options)
+                .ok()
+                .filter(|u| !u.pieces.is_empty())
+                .map(|u| finding(lint, d, &u))
+        })
+        .collect()
 }
 
 impl Lint for Unused {
@@ -252,23 +292,24 @@ impl Lint for Unused {
     }
 
     fn ask(&self, decls: &[Decl], answers: &Answers, options: &Options) -> Vec<Question> {
-        decls
-            .iter()
-            .filter(|d| d.ok)
-            .flat_map(|d| check(d, answers, options).err().unwrap_or_default())
-            .collect()
+        ask(decls, false, answers, options)
     }
 
     fn report(&self, decls: &[Decl], answers: &Answers, options: &Options) -> Vec<Finding> {
-        decls
-            .iter()
-            .filter(|d| d.ok)
-            .filter_map(|d| {
-                check(d, answers, options)
-                    .ok()
-                    .filter(|u| !u.pieces.is_empty())
-                    .map(|u| finding(d, &u))
-            })
-            .collect()
+        report(self.name(), decls, false, answers, options)
+    }
+}
+
+impl Lint for UnusedImports {
+    fn name(&self) -> &'static str {
+        "unused_imports"
+    }
+
+    fn ask(&self, decls: &[Decl], answers: &Answers, options: &Options) -> Vec<Question> {
+        ask(decls, true, answers, options)
+    }
+
+    fn report(&self, decls: &[Decl], answers: &Answers, options: &Options) -> Vec<Finding> {
+        report(self.name(), decls, true, answers, options)
     }
 }

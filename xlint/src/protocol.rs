@@ -42,11 +42,14 @@ pub struct Step {
     pub candidates: Vec<String>,
 }
 
-/// A theorem with its proof. `ok` is false if it did not check as written.
+/// A theorem with its proof, or the file's imports as one declaration of kind `imports`.
+/// `ok` is false if it did not check as written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decl {
     pub key: String,
     pub name: String,
+    #[serde(default)]
+    pub kind: String,
     pub range: Range,
     pub line: usize,
     pub ok: bool,

@@ -36,6 +36,7 @@ structure Step where
 structure Decl where
   key : String
   name : String
+  kind : String
   range : Range
   line : Nat
   ok : Bool
@@ -56,7 +57,7 @@ structure Diagnostic where
 /-- A theorem as loaded: the state to check it from, and the goal each step closed. -/
 structure Loaded where
   decl : Decl
-  before : Command.State
+  before : Option Command.State
   goals : Array (ContextInfo × TacticInfo)
 
 structure State where
@@ -256,6 +257,47 @@ def step (inputCtx : Parser.InputContext) (state : Command.State) (parser : Pars
   | .ok (_, state') => return (stx, state', parser')
   | .error e => throw <| IO.userError (← e.toMessageData.toString)
 
+/-- The imports as one declaration, each import line a piece. A plain import of a `module` file
+is private, so the file alone shows whether it can go. -/
+def imports (file text : String) (stop : Nat) : Loaded := Id.run do
+  let lines := (sub text 0 stop).splitOn "\n"
+  let isModule := lines.any (·.trimAscii.toString == "module")
+  let mut pieces := #[]
+  let mut start := 0
+  let mut number := 1
+  for line in lines do
+    let next := start + line.utf8ByteSize + 1
+    let words := (line.splitOn " ").filter (· != "")
+    if words.contains "import" && (words.head? == some "import" || words.head? == some "public" || words.head? == some "meta") then
+      let own := isModule && words.head? != some "public"
+      pieces := pieces.push
+        { kind := if own then "import" else "public import", text := line, range := { start, stop := min next text.utf8ByteSize },
+          line := number : Piece }
+    start := next
+    number := number + 1
+  let decl : Decl :=
+    { key := s!"{file}:imports", name := "imports", kind := "imports", range := { start := 0, stop := text.utf8ByteSize },
+      line := 1, ok := true, steps := #[], pieces }
+  return { decl, before := none, goals := #[] }
+
+/-- Check a whole file's text. Returns its first error. -/
+def checkFile (file source : String) (cancel : IO.CancelToken) : IO (Option String) := do
+  unsafe Lean.enableInitializersExecution
+  let inputCtx := Parser.mkInputContext source file
+  let (header, parser, messages) ← Parser.parseHeader inputCtx
+  let (env, messages) ← processHeader header {} messages inputCtx
+  if let some error ← failure? messages then return some error
+  let mut state := Command.mkState env {} {}
+  let mut parser := parser
+  repeat
+    let (stx, state', parser') ← step inputCtx state parser (some cancel)
+    for message in state'.messages.toList do
+      if message.severity matches .error then return some (← message.data.toString)
+    state := { state' with messages := {}, infoState := { enabled := false } }
+    parser := parser'
+    if Parser.isTerminalCommand stx then break
+  return none
+
 def load (file : String) : IO State := do
   let text ← IO.FS.readFile file
   let inputCtx := Parser.mkInputContext text file
@@ -266,7 +308,7 @@ def load (file : String) : IO State := do
     throw <| IO.userError s!"{file}: cannot process the imports: {" ".intercalate errors}"
   let mut state := Command.mkState env {} {}
   let mut parser := parser
-  let mut loaded := #[]
+  let mut loaded := #[imports file text parser.pos.byteIdx]
   let mut known : Option (Array String) := none
   let mut diagnostics := #[]
   repeat
@@ -282,9 +324,9 @@ def load (file : String) : IO State := do
         if known.isNone then known := some (closers.filter (parses state'.env))
         let (steps, goals) := steps text (known.getD #[]) state'.infoState.trees.toArray
         let decl : Decl :=
-          { key := s!"{file}:{range.start}", name := (declName stx).getD "", range, line := lineNumber text range.start,
+          { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "theorem", range, line := lineNumber text range.start,
             ok, steps, pieces := pieces text stx }
-        loaded := loaded.push { decl, before, goals }
+        loaded := loaded.push { decl, before := some before, goals }
     if Parser.isTerminalCommand stx then break
   return { file, text, loaded, diagnostics }
 
@@ -316,9 +358,16 @@ def timed (timeoutMs : Nat) (x : IO.CancelToken → IO α) : IO (Bool × Nat × 
 /-- Check the theorem once with the edits. Returns the verdict and the wall-clock ms. -/
 def runOnce (state : State) (l : Loaded) (edits : Array Edit) (timeoutMs : Nat) : IO (String × Nat × String) := do
   let source := applyEdits state.text l.decl.range edits
+  let some before := l.before
+    | let (late, ms, result) ← timed timeoutMs (checkFile state.file source)
+      if late then return ("timeout", ms, "")
+      match result with
+      | .ok none => return ("closes", ms, "")
+      | .ok (some error) => return ("fails", ms, error)
+      | .error e => return ("fails", ms, toString e)
   let inputCtx := Parser.mkInputContext source state.file
   let (late, ms, result) ← timed timeoutMs fun cancel =>
-    step inputCtx { l.before with messages := {} } {} (some cancel)
+    step inputCtx { before with messages := {} } {} (some cancel)
   if late then return ("timeout", ms, "")
   match result with
   | .error e => return ("fails", ms, toString e)

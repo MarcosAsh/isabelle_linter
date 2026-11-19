@@ -57,8 +57,8 @@ fn lint_file(prover: &mut dyn Prover, file: &str, args: &Args) -> Result<Vec<Fin
     let decls = &loaded.decls;
     eprintln!(
         "{file}: {} of {} declarations check",
-        decls.iter().filter(|d| d.ok).count(),
-        decls.len()
+        decls.iter().filter(|d| d.ok && d.kind != "imports").count(),
+        decls.iter().filter(|d| d.kind != "imports").count()
     );
     let mut findings = Vec::new();
     for lint in lints::all() {

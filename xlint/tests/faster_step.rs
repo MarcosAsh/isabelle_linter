@@ -44,6 +44,7 @@ impl Prover for Fake {
         let decl = Decl {
             key: "T:0".into(),
             name: "t".into(),
+            kind: String::new(),
             range,
             line: 1,
             ok: true,

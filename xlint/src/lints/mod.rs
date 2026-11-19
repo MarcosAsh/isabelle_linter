@@ -7,6 +7,7 @@ use crate::lint::Lint;
 pub fn all() -> Vec<Box<dyn Lint>> {
     vec![
         Box::new(unused::Unused),
+        Box::new(unused::UnusedImports),
         Box::new(faster_step::FasterStep),
         Box::new(diagnostic_commands::DiagnosticCommands),
     ]
