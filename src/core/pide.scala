@@ -8,9 +8,19 @@ import isabelle._
 
 object Pide {
   /* A print function run on the state after command `at`. A serial question is asked alone, so
-     that other questions do not distort its times. */
-  sealed case class Question(key: String, theory: Document.Node.Name, at: Command, function: String,
-      args: List[String], timeout: Time, serial: Boolean = false)
+     that other questions do not distort its times. The args are built on each use, since a round
+     can hold thousands of copies of a long lemma. */
+  final class Question(val key: String, val theory: Document.Node.Name, val at: Command, val function: String,
+      make_args: => List[String], val timeout: Time, val serial: Boolean) {
+    def args: List[String] = make_args
+    def copy(key: String): Question = new Question(key, theory, at, function, make_args, timeout, serial)
+  }
+
+  object Question {
+    def apply(key: String, theory: Document.Node.Name, at: Command, function: String, args: => List[String],
+        timeout: Time, serial: Boolean = false): Question =
+      new Question(key, theory, at, function, args, timeout, serial)
+  }
 
   /* The verdict, with all properties of the print function's result message. */
   sealed case class Answer(verdict: String, props: Properties.T = Nil) {
@@ -205,19 +215,20 @@ object Pide {
     again.foldLeft(Map.empty: Answers)((retried, question) => retried ++ ask(session, List(question), progress))
   }
 
+  private val log_rows = 500
+
   /* One TSV row per question: lint, function, key, args, verdict, then the answer's properties.
      A round cut short by an error logs its missing answers as unanswered. */
   private def write_log(path: Path, lint: String, questions: List[Question], answers: Answers): Unit = {
     def clean(s: String): String = s.replace('\t', ' ').nn.replace('\n', ' ').nn
-    val rows =
-      for (question <- questions) yield {
-        val answer = answers.getOrElse(question.key, unanswered)
-        val fields =
-          List(lint, question.function, question.key, question.args.mkString(" | "), answer.verdict) :::
-            answer.props.map({ case (name, value) => name + "=" + value })
-        fields.map(clean).mkString("\t") + "\n"
-      }
-    File.append(path, rows.mkString)
+    def row(question: Question): String = {
+      val answer = answers.getOrElse(question.key, unanswered)
+      val fields =
+        List(lint, question.function, question.key, question.args.mkString(" | "), answer.verdict) :::
+          answer.props.map({ case (name, value) => name + "=" + value })
+      fields.map(clean).mkString("\t") + "\n"
+    }
+    for (group <- questions.grouped(log_rows)) File.append(path, group.map(row).mkString)
   }
 
   /* Sledgehammer and try0 need HOL, the rule statistics an Isabelle built with etc/simpstats.patch. */
