@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use xlint::lint::{Lint, Options};
 use xlint::lints::unused::Unused;
-use xlint::protocol::{Answer, Ask, Decl, Hello, Piece, Question, Range};
+use xlint::protocol::{Answer, Ask, Decl, File, Hello, Piece, Question, Range};
 use xlint::prover::{Prover, Result};
 use xlint::{fix, rounds};
 
@@ -21,8 +21,11 @@ impl Prover for Fake {
         Ok(Hello::default())
     }
 
-    fn load(&mut self, _file: &str) -> Result<Vec<Decl>> {
-        Ok(self.decls.clone())
+    fn load(&mut self, _file: &str) -> Result<File> {
+        Ok(File {
+            decls: self.decls.clone(),
+            diagnostics: Vec::new(),
+        })
     }
 
     fn ask(&mut self, questions: &[Question]) -> Result<Vec<Answer>> {
@@ -59,6 +62,7 @@ impl Fake {
             verdict: if fails { "fails" } else { "closes" }.to_string(),
             ms,
             message: String::new(),
+            suggestions: Vec::new(),
         }
     }
 }
@@ -126,7 +130,7 @@ fn fake(needed: &[usize], frees: &[(usize, usize)]) -> Fake {
 }
 
 fn lint(prover: &mut Fake) -> Vec<xlint::lint::Finding> {
-    let decls = prover.load("T").unwrap();
+    let decls = prover.load("T").unwrap().decls;
     let options = Options::default();
     let answers = rounds::run(prover, &Unused, &decls, &options, None).unwrap();
     Unused.report(&decls, &answers, &options)
@@ -178,7 +182,7 @@ fn pieces_that_only_go_alone_are_taken_one_by_one() {
         fn hello(&mut self) -> Result<Hello> {
             self.0.hello()
         }
-        fn load(&mut self, file: &str) -> Result<Vec<Decl>> {
+        fn load(&mut self, file: &str) -> Result<File> {
             self.0.load(file)
         }
         fn ask(&mut self, questions: &[Question]) -> Result<Vec<Answer>> {

@@ -12,7 +12,8 @@ const USAGE: &str = "Usage: xlint -s SERVER [-F] [-l LINTS] [-L LOG] [-o NAME=VA
   -F           apply the fixes to the files
   -l LINTS     comma-separated lints to run (default: all)
   -L LOG       append every question and answer to LOG, as TSV
-  -o NAME=VAL  set an option (timeout_ms, factor, batch, runs, unused_ahead)";
+  -o NAME=VAL  set an option (timeout_ms, factor, batch, runs, unused_ahead,
+               faster_step_slow_ms, faster_step_speedup)";
 
 struct Args {
     server: Vec<String>,
@@ -52,7 +53,8 @@ fn parse() -> Result<Args, String> {
 }
 
 fn lint_file(prover: &mut dyn Prover, file: &str, args: &Args) -> Result<Vec<Finding>, String> {
-    let decls = prover.load(file)?;
+    let loaded = prover.load(file)?;
+    let decls = &loaded.decls;
     eprintln!(
         "{file}: {} of {} declarations check",
         decls.iter().filter(|d| d.ok).count(),
@@ -70,11 +72,12 @@ fn lint_file(prover: &mut dyn Prover, file: &str, args: &Args) -> Result<Vec<Fin
         let answers = rounds::run(
             prover,
             lint.as_ref(),
-            &decls,
+            decls,
             &args.options,
             args.log.as_deref(),
         )?;
-        findings.extend(lint.report(&decls, &answers, &args.options));
+        findings.extend(lint.read(&loaded));
+        findings.extend(lint.report(decls, &answers, &args.options));
     }
     for finding in &findings {
         println!(
@@ -83,14 +86,11 @@ fn lint_file(prover: &mut dyn Prover, file: &str, args: &Args) -> Result<Vec<Fin
         );
     }
     if args.fix {
-        let edits: Vec<_> = findings.iter().flat_map(|f| f.edits.clone()).collect();
+        let (edits, fixed) = fix::disjoint(&findings);
         if !edits.is_empty() {
             let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
             std::fs::write(file, fix::apply(&text, &edits)?).map_err(|e| format!("{file}: {e}"))?;
-            println!(
-                "Fixed {} findings in {file}",
-                findings.iter().filter(|f| !f.edits.is_empty()).count()
-            );
+            println!("Fixed {fixed} findings in {file}");
         }
     }
     Ok(findings)
@@ -104,14 +104,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let result = Server::start(&args.server).and_then(|mut server| {
+    // a server loads one file, so each file gets its own
+    let result = args.files.iter().try_fold(0, |count, file| {
+        let mut server = Server::start(&args.server)?;
         let hello = server.hello()?;
         eprintln!("{} {}", hello.prover, hello.version);
-        let mut count = 0;
-        for file in &args.files {
-            count += lint_file(&mut server, file, &args)?.len();
-        }
-        Ok(count)
+        Ok::<usize, String>(count + lint_file(&mut server, file, &args)?.len())
     });
     match result {
         Ok(count) => {

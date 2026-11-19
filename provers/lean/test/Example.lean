@@ -13,3 +13,10 @@ theorem one_lemma (n : Nat) : n + 0 = n := by
 theorem keeps (n : Nat) (h : 0 < n) : n ≠ 0 := by
   have h' : n ≠ 0 := Nat.pos_iff_ne_zero.mp h
   exact h'
+
+#check Nat.add_comm
+
+#eval (List.range 2000).foldl (· + ·) 0
+
+theorem slow_step (a b c d : Nat) (h : a + 2 * b = 3 * c + 1) (h' : c = d + b) : a + 2 * b = 3 * (d + b) + 1 := by
+  simp_all

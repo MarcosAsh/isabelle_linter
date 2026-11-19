@@ -37,6 +37,9 @@ pub struct Step {
     pub text: String,
     pub range: Range,
     pub line: usize,
+    /// Texts `faster_step` tries in place of the step.
+    #[serde(default)]
+    pub candidates: Vec<String>,
 }
 
 /// A theorem with its proof. `ok` is false if it did not check as written.
@@ -51,6 +54,25 @@ pub struct Decl {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub pieces: Vec<Piece>,
+}
+
+/// A command that proves nothing, like `#eval`, with the ms it took when the file was loaded.
+/// Its range is what to delete. The category is `test`, `exploration` or `noise`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub name: String,
+    pub text: String,
+    pub category: String,
+    pub range: Range,
+    pub line: usize,
+    pub ms: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct File {
+    pub decls: Vec<Decl>,
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// What a prover's server knows that the core does not.
@@ -70,6 +92,8 @@ pub enum Ask {
     Run { edits: Vec<Edit> },
     /// Run `text` on the goal of step number `step` in place of that step.
     Step { step: usize, text: String },
+    /// More candidates for the step, from the prover's own tools.
+    Suggest { step: usize },
 }
 
 /// A serial question is asked alone, so that other questions do not distort its times.
@@ -94,6 +118,8 @@ pub struct Answer {
     pub ms: Vec<u64>,
     #[serde(default)]
     pub message: String,
+    #[serde(default)]
+    pub suggestions: Vec<String>,
 }
 
 impl Answer {
@@ -103,6 +129,7 @@ impl Answer {
             verdict: "unanswered".to_string(),
             ms: Vec::new(),
             message: String::new(),
+            suggestions: Vec::new(),
         }
     }
 
@@ -128,8 +155,17 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
-    Hello { hello: Hello },
-    Loaded { decls: Vec<Decl> },
-    Answer { answer: Answer },
-    Error { message: String },
+    Hello {
+        hello: Hello,
+    },
+    Loaded {
+        #[serde(flatten)]
+        file: File,
+    },
+    Answer {
+        answer: Answer,
+    },
+    Error {
+        message: String,
+    },
 }

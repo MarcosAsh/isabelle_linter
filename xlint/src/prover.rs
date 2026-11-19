@@ -1,6 +1,6 @@
 //! A prover behind the protocol: a server process that reads requests and writes responses.
 
-use crate::protocol::{Answer, Decl, Hello, Question, Request, Response};
+use crate::protocol::{Answer, File, Hello, Question, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -8,7 +8,7 @@ pub type Result<T> = std::result::Result<T, String>;
 
 pub trait Prover {
     fn hello(&mut self) -> Result<Hello>;
-    fn load(&mut self, file: &str) -> Result<Vec<Decl>>;
+    fn load(&mut self, file: &str) -> Result<File>;
     /// All questions go out at once; the server may answer them in any order.
     fn ask(&mut self, questions: &[Question]) -> Result<Vec<Answer>>;
 }
@@ -68,12 +68,12 @@ impl Prover for Server {
         }
     }
 
-    fn load(&mut self, file: &str) -> Result<Vec<Decl>> {
+    fn load(&mut self, file: &str) -> Result<File> {
         self.send(&Request::Load {
             file: file.to_string(),
         })?;
         match self.receive()? {
-            Response::Loaded { decls } => Ok(decls),
+            Response::Loaded { file } => Ok(file),
             other => Err(format!("expected loaded, got {other:?}")),
         }
     }

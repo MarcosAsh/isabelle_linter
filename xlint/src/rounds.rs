@@ -93,6 +93,7 @@ fn write_log(
                 format!("run {}", edits.join(" | "))
             }
             Ask::Step { step, text } => format!("step {step} {text}"),
+            Ask::Suggest { step } => format!("suggest {step} {}", answer.suggestions.join(" | ")),
         };
         let ms: Vec<String> = answer.ms.iter().map(u64::to_string).collect();
         writeln!(

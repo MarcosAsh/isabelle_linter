@@ -1,7 +1,7 @@
 //! A lint asks questions in rounds, with all answers so far, until it asks nothing new; then it
 //! turns the answers into findings.
 
-use crate::protocol::{Answer, Decl, Edit};
+use crate::protocol::{Answer, Decl, Edit, File};
 use std::collections::HashMap;
 
 pub type Answers = HashMap<String, Answer>;
@@ -18,6 +18,10 @@ pub struct Options {
     pub runs: u32,
     /// Questions `unused` asks ahead per declaration while it goes through pieces one by one.
     pub unused_ahead: usize,
+    /// `faster_step` leaves steps under this many ms alone.
+    pub faster_step_slow_ms: u64,
+    /// How many times faster a step's replacement has to be.
+    pub faster_step_speedup: f64,
 }
 
 impl Default for Options {
@@ -28,6 +32,8 @@ impl Default for Options {
             batch: 500,
             runs: 3,
             unused_ahead: 4,
+            faster_step_slow_ms: 1000,
+            faster_step_speedup: 2.0,
         }
     }
 }
@@ -48,6 +54,12 @@ impl Options {
             "batch" => self.batch = value.parse().map_err(bad)?,
             "runs" => self.runs = value.parse().map_err(bad)?,
             "unused_ahead" => self.unused_ahead = value.parse().map_err(bad)?,
+            "faster_step_slow_ms" => self.faster_step_slow_ms = value.parse().map_err(bad)?,
+            "faster_step_speedup" => {
+                self.faster_step_speedup = value
+                    .parse()
+                    .map_err(|_| format!("bad value for {name}: {value}"))?
+            }
             _ => return Err(format!("unknown option {name}")),
         }
         Ok(())
@@ -80,4 +92,8 @@ pub trait Lint {
         options: &Options,
     ) -> Vec<crate::protocol::Question>;
     fn report(&self, decls: &[Decl], answers: &Answers, options: &Options) -> Vec<Finding>;
+    /// What the loaded file shows without any question.
+    fn read(&self, _file: &File) -> Vec<Finding> {
+        Vec::new()
+    }
 }
