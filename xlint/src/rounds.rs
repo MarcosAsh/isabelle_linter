@@ -94,6 +94,7 @@ fn write_log(
             }
             Ask::Step { step, text } => format!("step {step} {text}"),
             Ask::Suggest { step } => format!("suggest {step} {}", answer.suggestions.join(" | ")),
+            Ask::Narrow { call } => format!("narrow {call} {}", answer.suggestions.join(" | ")),
             Ask::Stats => {
                 let rules: Vec<String> = answer
                     .rules

@@ -24,6 +24,10 @@ pub struct Options {
     pub faster_step_speedup: f64,
     /// `simp_hygiene` reports a rule once the file's proofs try it this often.
     pub simp_hygiene_min: u64,
+    /// `simp_scope` leaves declarations under this many ms alone.
+    pub simp_scope_slow_ms: u64,
+    /// How many times faster the declaration has to be with its simp calls narrowed.
+    pub simp_scope_speedup: f64,
 }
 
 impl Default for Options {
@@ -37,6 +41,8 @@ impl Default for Options {
             faster_step_slow_ms: 1000,
             faster_step_speedup: 2.0,
             simp_hygiene_min: 100,
+            simp_scope_slow_ms: 1000,
+            simp_scope_speedup: 1.2,
         }
     }
 }
@@ -60,6 +66,12 @@ impl Options {
             "faster_step_slow_ms" => self.faster_step_slow_ms = value.parse().map_err(bad)?,
             "faster_step_speedup" => {
                 self.faster_step_speedup = value
+                    .parse()
+                    .map_err(|_| format!("bad value for {name}: {value}"))?
+            }
+            "simp_scope_slow_ms" => self.simp_scope_slow_ms = value.parse().map_err(bad)?,
+            "simp_scope_speedup" => {
+                self.simp_scope_speedup = value
                     .parse()
                     .map_err(|_| format!("bad value for {name}: {value}"))?
             }

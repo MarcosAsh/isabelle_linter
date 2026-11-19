@@ -107,6 +107,7 @@ fn decl(key: &str, source: &str, pieces: &[(&str, &str)]) -> Decl {
         line: 1,
         ok: true,
         steps: Vec::new(),
+        simps: Vec::new(),
         pieces,
     }
 }

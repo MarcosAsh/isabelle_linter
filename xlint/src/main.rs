@@ -13,7 +13,8 @@ const USAGE: &str = "Usage: xlint -s SERVER [-F] [-l LINTS] [-L LOG] [-o NAME=VA
   -l LINTS     comma-separated lints to run (default: all)
   -L LOG       append every question and answer to LOG, as TSV
   -o NAME=VAL  set an option (timeout_ms, factor, batch, runs, unused_ahead,
-               faster_step_slow_ms, faster_step_speedup, simp_hygiene_min)";
+               faster_step_slow_ms, faster_step_speedup, simp_hygiene_min,
+               simp_scope_slow_ms, simp_scope_speedup)";
 
 struct Args {
     server: Vec<String>,

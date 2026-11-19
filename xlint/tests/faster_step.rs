@@ -49,6 +49,7 @@ impl Prover for Fake {
             line: 1,
             ok: true,
             steps: vec![step],
+            simps: Vec::new(),
             pieces: vec![],
         };
         Ok(File {
@@ -78,7 +79,7 @@ impl Fake {
                 Some(_) => answer.verdict = "timeout".to_string(),
                 None => answer.verdict = "fails".to_string(),
             },
-            Ask::Stats => {}
+            Ask::Stats | Ask::Narrow { .. } => {}
             Ask::Run { edits } => {
                 let closes = edits.iter().all(|e| e.text != self.broken);
                 answer.verdict = if closes { "closes" } else { "fails" }.to_string();

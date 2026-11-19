@@ -55,6 +55,9 @@ pub struct Decl {
     pub ok: bool,
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Simplifier calls that use the whole simp set, which `simp_scope` narrows.
+    #[serde(default)]
+    pub simps: Vec<Step>,
     #[serde(default)]
     pub pieces: Vec<Piece>,
 }
@@ -97,6 +100,8 @@ pub enum Ask {
     Step { step: usize, text: String },
     /// More candidates for the step, from the prover's own tools.
     Suggest { step: usize },
+    /// The simplifier call number `call` restricted to the rules it used, as suggestions.
+    Narrow { call: usize },
     /// Check the declaration as written and count what its simplifier calls tried.
     Stats,
 }

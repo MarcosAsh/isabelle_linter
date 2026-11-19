@@ -17,6 +17,7 @@ fn theorem(name: &str, line: usize) -> Decl {
         line,
         ok: true,
         steps: Vec::new(),
+        simps: Vec::new(),
         pieces: Vec::new(),
     }
 }

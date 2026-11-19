@@ -41,6 +41,7 @@ structure Decl where
   line : Nat
   ok : Bool
   steps : Array Step
+  simps : Array Step
   pieces : Array Piece
   deriving ToJson
 
@@ -66,6 +67,8 @@ structure Loaded where
   decl : Decl
   before : Option Command.State
   goals : Array (ContextInfo × TacticInfo)
+  /-- The goals before each of `decl.simps`. -/
+  simpGoals : Array (ContextInfo × TacticInfo) := #[]
 
 structure State where
   file : String := ""
@@ -206,6 +209,30 @@ def steps (text : String) (known : Array String) (trees : Array InfoTree) :
     { text := source, range, line := lineNumber text range.start, candidates := candidates known source }
   return (sorted.map (step ·.1), sorted.map fun (_, ctx, ti) => (ctx, ti))
 
+/-- The `simp?` form of a simp call that has no `only`, which makes Lean propose one that has. -/
+def asking (text : String) : Option String := do
+  let name ← ["simp_all", "simpa", "simp"].find? (text.startsWith ·)
+  let rest := (text.drop name.length).toString
+  guard (rest.isEmpty || rest.startsWith " " || rest.startsWith "[" || rest.startsWith "\n")
+  guard ((rest.splitOn " only").length == 1)
+  some (name ++ "?" ++ rest)
+
+/-- The simp calls of the source that `simp?` can narrow. One that ran on several goals is left
+out, since each goal may need other rules. -/
+def simpCalls (text : String) (trees : Array InfoTree) : Array Step × Array (ContextInfo × TacticInfo) := Id.run do
+  let mut found : Array (Range × ContextInfo × TacticInfo) := #[]
+  let mut again : Array Range := #[]
+  for tree in trees do
+    for (ctx, ti) in tacticInfos none tree do
+      let some range := range? ti.stx | continue
+      unless (ti.stx.getHeadInfo matches .original ..) && !hasNested ti.stx do continue
+      unless (asking (sub text range.start range.stop)).isSome do continue
+      if found.any (·.1 == range) then again := again.push range else found := found.push (range, ctx, ti)
+  let sorted := (found.filter (!again.contains ·.1)).qsort (·.1.start < ·.1.start)
+  let call (range : Range) : Step :=
+    { text := sub text range.start range.stop, range, line := lineNumber text range.start, candidates := #[] }
+  return (sorted.map (call ·.1), sorted.map fun (_, ctx, ti) => (ctx, ti))
+
 partial def hasBy (stx : Syntax) : Bool :=
   stx.getKind == ``Lean.Parser.Term.byTactic || stx.getArgs.any hasBy
 
@@ -284,7 +311,7 @@ def imports (file text : String) (stop : Nat) : Loaded := Id.run do
     number := number + 1
   let decl : Decl :=
     { key := s!"{file}:imports", name := "imports", kind := "imports", range := { start := 0, stop := text.utf8ByteSize },
-      line := 1, ok := true, steps := #[], pieces }
+      line := 1, ok := true, steps := #[], simps := #[], pieces }
   return { decl, before := none, goals := #[] }
 
 /-- Check a whole file's text. Returns its first error. -/
@@ -329,11 +356,13 @@ def load (file : String) : IO State := do
       if let some range := range? stx then
         let ok := (← failure? state'.messages).isNone
         if known.isNone then known := some (closers.filter (parses state'.env))
-        let (steps, goals) := steps text (known.getD #[]) state'.infoState.trees.toArray
+        let trees := state'.infoState.trees.toArray
+        let (steps, goals) := steps text (known.getD #[]) trees
+        let (simps, simpGoals) := simpCalls text trees
         let decl : Decl :=
           { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "theorem", range, line := lineNumber text range.start,
-            ok, steps, pieces := pieces text stx }
-        loaded := loaded.push { decl, before := some before, goals }
+            ok, steps, simps, pieces := pieces text stx }
+        loaded := loaded.push { decl, before := some before, goals, simpGoals }
     if Parser.isTerminalCommand stx then break
   return { file, text, loaded, diagnostics }
 
@@ -426,19 +455,24 @@ def ruleStats (state : State) (l : Loaded) (timeoutMs : Nat) : IO (String × Nat
   let verdict := if (← failure? after.messages).isNone then "closes" else "fails"
   return (verdict, ms, totals.toArray.map (·.2) |>.qsort (·.name < ·.name))
 
-/-- Run `tactic` on the goal a step closed. Returns the verdict, the ms and the messages it wrote. -/
+/-- Run `tactic` on the goal before a step. Returns the ms, the messages it wrote and the verdict,
+which is `open` if goals are left. -/
 def tacticOnce (ctx : ContextInfo) (ti : TacticInfo) (tactic : String) (timeoutMs : Nat) :
     IO (String × Nat × Array String) := do
   let .ok stx := Parser.runParserCategory ctx.env `tactic tactic | return ("fails", 0, #["does not parse"])
   let some goal := ti.goalsBefore.head? | return ("fails", 0, #["no goal"])
-  let run : MetaM (Bool × Array String) := do
+  let run : MetaM (String × Array String) := do
     let left ← (Term.withSynthesize (Tactic.run goal (Tactic.evalTactic stx))).run'
     let proof ← instantiateMVars (mkMVar goal)
     let messages := (← getThe Core.State).messages
     let texts ← messages.toList.toArray.mapM (·.data.toString)
-    return (left.isEmpty && !messages.hasErrors && !proof.hasSorry && !proof.hasExprMVar, texts)
-  let core (cancel : IO.CancelToken) : IO (Bool × Array String) := do
-    let x : CoreM (Bool × Array String) := (·.1) <$> run.run { lctx := {} } { mctx := ti.mctxBefore }
+    let verdict :=
+      if messages.hasErrors || proof.hasSorry then "fails"
+      else if left.isEmpty && !proof.hasExprMVar then "closes"
+      else "open"
+    return (verdict, texts)
+  let core (cancel : IO.CancelToken) : IO (String × Array String) := do
+    let x : CoreM (String × Array String) := (·.1) <$> run.run { lctx := {} } { mctx := ti.mctxBefore }
     let (result, _) ← (withOptions (fun _ => ctx.options) x).toIO
       { currNamespace := ctx.currNamespace, openDecls := ctx.openDecls, fileName := "<xlint>", fileMap := default,
         cancelTk? := some cancel }
@@ -448,18 +482,14 @@ def tacticOnce (ctx : ContextInfo) (ti : TacticInfo) (tactic : String) (timeoutM
   if late then return ("timeout", ms, #[])
   match result with
   | .error e => return ("fails", ms, #[toString e])
-  | .ok (closed, messages) => return (if closed then "closes" else "fails", ms, messages)
+  | .ok (verdict, messages) => return (verdict, ms, messages)
 
 /-- The tactics Lean itself proposes for a step, from the `Try this` messages of `simp?`. -/
-def suggest (ctx : ContextInfo) (ti : TacticInfo) (text : String) (timeoutMs : Nat) : IO (Array String) := do
-  let asked :=
-    if text.startsWith "simp_all" then some ("simp_all?" ++ (text.drop 8).toString)
-    else if text.startsWith "simp only" then none
-    else if text.startsWith "simp" then some ("simp?" ++ (text.drop 4).toString)
-    else none
-  let some asked := asked | return #[]
+def suggest (ctx : ContextInfo) (ti : TacticInfo) (text : String) (timeoutMs : Nat) (mayLeaveGoals := false) :
+    IO (Array String) := do
+  let some asked := asking text | return #[]
   let (verdict, _, messages) ← tacticOnce ctx ti asked timeoutMs
-  if verdict != "closes" then return #[]
+  unless verdict == "closes" || (mayLeaveGoals && verdict == "open") do return #[]
   let mut found := #[]
   for message in messages do
     if let [_, proposal] := message.splitOn "Try this:" then
@@ -487,10 +517,11 @@ def answer (state : State) (question : Json) : IO Json := do
       let (verdict, ms, messages) ← tacticOnce ctx ti text timeout
       return (verdict, ms, if verdict == "closes" then "" else " ".intercalate messages.toList)
     | _, _ => return ("error", 0, s!"cannot {what}")
-  if what == "suggest" then
-    let some (ctx, ti) := goal? | return reply "error" #[] "no such step"
-    let step := (question.getObjValAs? Nat "step").toOption.getD 0
-    let found ← suggest ctx ti l.decl.steps[step]!.text timeout
+  if what == "suggest" || what == "narrow" then
+    let index := (question.getObjValAs? Nat (if what == "narrow" then "call" else "step")).toOption.getD 0
+    let (goals, texts) := if what == "narrow" then (l.simpGoals, l.decl.simps) else (l.goals, l.decl.steps)
+    let (some (ctx, ti), some step) := (goals[index]?, texts[index]?) | return reply "error" #[] "no such step"
+    let found ← suggest ctx ti step.text timeout (mayLeaveGoals := what == "narrow")
     return Json.mkObj [("response", "answer"), ("answer", Json.mkObj
       [("key", key), ("verdict", "closes"), ("ms", toJson (#[] : Array Nat)), ("message", ""),
         ("suggestions", toJson found)])]
