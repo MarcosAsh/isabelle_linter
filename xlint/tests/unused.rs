@@ -77,6 +77,7 @@ fn piece(kind: &str, text: &str, start: usize) -> Piece {
             stop: start + text.len(),
         },
         line: 1,
+        replacements: Vec::new(),
     }
 }
 
@@ -99,7 +100,7 @@ fn decl(key: &str, source: &str, pieces: &[(&str, &str)]) -> Decl {
     Decl {
         key: key.to_string(),
         name: key.to_string(),
-        kind: String::new(),
+        kind: "theorem".to_string(),
         range: Range {
             start: 0,
             stop: source.len(),

@@ -24,6 +24,8 @@ structure Piece where
   text : String
   range : Range
   line : Nat
+  /-- Texts the definition lints try in place of the piece. -/
+  replacements : Array String := #[]
   deriving ToJson
 
 structure Step where
@@ -105,32 +107,77 @@ def havePiece (text : String) (stx : Syntax) : Option Piece := do
   let head := (sub text r.start r.stop).takeWhile (· != '\n')
   some { kind := "have", text := head.toString, range := { start := first, stop := next }, line := lineNumber text r.start }
 
-/-- A lemma of a `simp [...]` list goes with one comma, the last one with the brackets. -/
-def simpPieces (text : String) (list : Syntax) : Array Piece := Id.run do
-  let args := list.getArgs
-  let lemmas := (List.range args.size).filter (· % 2 == 0) |>.toArray
-  let mut pieces := #[]
-  for i in lemmas do
+/-- What deleting each item of a comma-separated list removes: the item with one comma, or
+`whole` if it is the only one. -/
+def itemRanges (args : Array Syntax) (whole : Range) : Array (Range × Range) := Id.run do
+  let items := (List.range args.size).filter (· % 2 == 0) |>.toArray
+  let mut found := #[]
+  for i in items do
     let some r := range? args[i]! | continue
-    let piece (range : Range) : Piece :=
-      { kind := "fact", text := sub text r.start r.stop, range, line := lineNumber text r.start }
-    if lemmas.size == 1 then
-      -- ` [h]` goes whole, with the space before it
-      let bytes := text.toUTF8
-      let mut start := r.start
-      while start > 0 && bytes[start - 1]! != '['.toNat.toUInt8 do start := start - 1
-      let mut stop := r.stop
-      while stop < bytes.size && bytes[stop]! != ']'.toNat.toUInt8 do stop := stop + 1
-      if start > 1 && stop < bytes.size then
-        let open_ := if bytes[start - 2]! == 32 then start - 2 else start - 1
-        pieces := pieces.push (piece { start := open_, stop := stop + 1 })
+    if items.size == 1 then found := found.push (r, whole)
     else if i + 2 < args.size then
       let some next := range? args[i + 2]! | continue
-      pieces := pieces.push (piece { start := r.start, stop := next.start })
+      found := found.push (r, { start := r.start, stop := next.start })
     else
       let some previous := range? args[i - 2]! | continue
-      pieces := pieces.push (piece { start := previous.stop, stop := r.stop })
-  return pieces
+      found := found.push (r, { start := previous.stop, stop := r.stop })
+  return found
+
+/-- A lemma of a `simp [...]` list goes with one comma, the only one with the brackets and the
+space before them. -/
+def simpPieces (text : String) (list : Syntax) : Array Piece := Id.run do
+  let some r := range? list | return #[]
+  let bytes := text.toUTF8
+  let mut start := r.start
+  while start > 0 && bytes[start - 1]! != '['.toNat.toUInt8 do start := start - 1
+  let mut stop := r.stop
+  while stop < bytes.size && bytes[stop]! != ']'.toNat.toUInt8 do stop := stop + 1
+  unless start > 1 && stop < bytes.size do return #[]
+  let whole := { start := if bytes[start - 2]! == 32 then start - 2 else start - 1, stop := stop + 1 }
+  return (itemRanges list.getArgs whole).map fun (item, range) =>
+    { kind := "fact", text := sub text item.start item.stop, range, line := lineNumber text item.start }
+
+partial def hasAtom (atom : String) (stx : Syntax) : Bool :=
+  stx.isToken atom || stx.getArgs.any (hasAtom atom)
+
+/-- The handlers of a `deriving` clause or command. Other files can use a public type's
+instances, so only a private type's are the file's own. -/
+def derivingPieces (text : String) (isPrivate : Bool) (stx : Syntax) : Array Piece := Id.run do
+  let args := stx.getArgs
+  unless args.size > 1 && args[0]!.isToken "deriving" do return #[]
+  let some classes := args.find? fun arg =>
+    arg.getKind == nullKind && arg.getNumArgs > 0 && arg[0].getKind == ``Lean.Parser.Command.derivingClass | return #[]
+  let some r := range? stx | return #[]
+  let bytes := text.toUTF8
+  let mut start := r.start
+  while start > 0 && (bytes[start - 1]! == 32 || bytes[start - 1]! == 10) do start := start - 1
+  let command := args.any (·.isToken "instance")
+  let whole := if command then { start := (lineOf text r.start).1, stop := (lineOf text r.stop).2 } else { start, stop := r.stop }
+  let kind := if isPrivate && !command then "deriving" else "public deriving"
+  return (itemRanges classes.getArgs whole).map fun (item, range) =>
+    { kind, text := sub text item.start item.stop, range, line := lineNumber text item.start, replacements := #[""] }
+
+partial def binderNames (stx : Syntax) : Array String :=
+  let here :=
+    if stx.getKind == ``Lean.Parser.Term.explicitBinder then stx[1].getArgs.filterMap fun name =>
+      if name.isIdent then some name.getId.toString else none
+    else #[]
+  stx.getArgs.foldl (fun found arg => found ++ binderNames arg) here
+
+/-- A `termination_by` with its `decreasing_by`, to replace by structural recursion on one of
+the `binders`, or on the first argument after the colon. -/
+def terminationPiece (text : String) (binders : Array String) (stx : Syntax) : Option Piece := do
+  guard (stx.getKind == ``Lean.Parser.Termination.suffix)
+  let r ← range? stx
+  let source := sub text r.start r.stop
+  guard (source.startsWith "termination_by" && (source.splitOn "structural").length == 1)
+  let on := binders.map ("termination_by structural " ++ ·)
+  some { kind := "termination", text := (source.takeWhile (· != '\n')).toString, range := r,
+         line := lineNumber text r.start, replacements := on.push "termination_by structural x => x" }
+
+partial def definitionPieces (text : String) (isPrivate : Bool) (binders : Array String) (stx : Syntax) : Array Piece :=
+  let here := derivingPieces text isPrivate stx ++ (terminationPiece text binders stx).toArray
+  stx.getArgs.foldl (fun found arg => found ++ definitionPieces text isPrivate binders arg) here
 
 def isHave (stx : Syntax) : Bool :=
   stx.getKind.toString.startsWith "Lean.Parser.Tactic" && stx.getNumArgs > 0 && stx[0].isToken "have"
@@ -363,6 +410,14 @@ def load (file : String) : IO State := do
           { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "theorem", range, line := lineNumber text range.start,
             ok, steps, simps, pieces := pieces text stx }
         loaded := loaded.push { decl, before := some before, goals, simpGoals }
+    else if let some range := range? stx then
+      let found := definitionPieces text (hasAtom "private" stx[0]) (binderNames stx) stx
+      unless found.isEmpty do
+        let decl : Decl :=
+          { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "definition", range,
+            line := lineNumber text range.start, ok := (← failure? state'.messages).isNone, steps := #[], simps := #[],
+            pieces := found }
+        loaded := loaded.push { decl, before := some before, goals := #[] }
     if Parser.isTerminalCommand stx then break
   return { file, text, loaded, diagnostics }
 

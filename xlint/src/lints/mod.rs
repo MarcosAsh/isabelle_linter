@@ -1,3 +1,4 @@
+pub mod definitions;
 pub mod diagnostic_commands;
 pub mod faster_step;
 pub mod simp_hygiene;
@@ -14,5 +15,6 @@ pub fn all() -> Vec<Box<dyn Lint>> {
         Box::new(diagnostic_commands::DiagnosticCommands),
         Box::new(simp_hygiene::SimpHygiene),
         Box::new(simp_scope::SimpScope),
+        Box::new(definitions::Definitions),
     ]
 }

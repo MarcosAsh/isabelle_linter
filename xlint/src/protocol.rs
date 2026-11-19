@@ -29,6 +29,9 @@ pub struct Piece {
     pub text: String,
     pub range: Range,
     pub line: usize,
+    /// Texts `definitions` tries in place of the range. An empty one deletes it.
+    #[serde(default)]
+    pub replacements: Vec<String>,
 }
 
 /// A proof step that closes its goal, like Isabelle's `by` or a terminal tactic.
@@ -42,8 +45,8 @@ pub struct Step {
     pub candidates: Vec<String>,
 }
 
-/// A theorem with its proof, or the file's imports as one declaration of kind `imports`.
-/// `ok` is false if it did not check as written.
+/// A `theorem` with its proof, a `definition`, or the file's `imports` as one declaration, on
+/// which a run checks the whole file. `ok` is false if it did not check as written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decl {
     pub key: String,

@@ -8,7 +8,7 @@ pub struct Unused;
 /// The same search over the file's imports, each checked by loading the whole file again.
 pub struct UnusedImports;
 
-const IMPORTS: &str = "imports";
+pub(crate) const IMPORTS: &str = "imports";
 
 /// Reported but never fixed. An assumption changes the statement, and an import that importers
 /// see can only be judged with them.
@@ -30,7 +30,10 @@ struct Unneeded {
 /// The pieces' deletions, with overlapping ranges joined, since a piece can lie inside another
 /// and two list items can share a comma.
 fn deletions(decl: &Decl, pieces: &[usize]) -> Vec<Edit> {
-    let mut ranges: Vec<Range> = pieces.iter().map(|&i| decl.pieces[i].range).collect();
+    joined(pieces.iter().map(|&i| decl.pieces[i].range).collect())
+}
+
+pub(crate) fn joined(mut ranges: Vec<Range>) -> Vec<Edit> {
     ranges.sort_by_key(|r| (r.start, r.stop));
     let mut joined: Vec<Range> = Vec::new();
     for range in ranges {
@@ -258,9 +261,8 @@ fn finding(lint: &str, decl: &Decl, unneeded: &Unneeded) -> Finding {
 }
 
 fn chosen(decls: &[Decl], imports: bool) -> impl Iterator<Item = &Decl> {
-    decls
-        .iter()
-        .filter(move |d| d.ok && (d.kind == IMPORTS) == imports)
+    let kind = if imports { IMPORTS } else { "theorem" };
+    decls.iter().filter(move |d| d.ok && d.kind == kind)
 }
 
 fn ask(decls: &[Decl], imports: bool, answers: &Answers, options: &Options) -> Vec<Question> {
