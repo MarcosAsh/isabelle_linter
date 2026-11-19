@@ -190,7 +190,7 @@ fn pieces_that_only_go_alone_are_taken_one_by_one() {
                 let both = [4, 5].iter().all(|&i| {
                     edits
                         .iter()
-                        .any(|e| e.range == self.0.decls[0].pieces[i].range)
+                        .any(|e| e.range.contains(&self.0.decls[0].pieces[i].range))
                 });
                 if both {
                     answer.verdict = "fails".to_string();

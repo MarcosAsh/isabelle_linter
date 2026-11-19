@@ -1,7 +1,7 @@
 //! Pieces a proof does not need, found by checking the declaration again without them.
 
 use crate::lint::{Answers, Finding, Lint, Options};
-use crate::protocol::{Ask, Decl, Edit, Piece, Question};
+use crate::protocol::{Ask, Decl, Edit, Piece, Question, Range};
 
 pub struct Unused;
 
@@ -19,24 +19,22 @@ struct Unneeded {
     medians: Option<(u64, u64)>,
 }
 
-/// One deletion per piece, without the pieces that lie inside another one.
+/// The pieces' deletions, with overlapping ranges joined, since a piece can lie inside another
+/// and two list items can share a comma.
 fn deletions(decl: &Decl, pieces: &[usize]) -> Vec<Edit> {
-    let range = |i: usize| decl.pieces[i].range;
-    let mut outer: Vec<usize> = pieces
-        .iter()
-        .copied()
-        .filter(|&i| {
-            !pieces
-                .iter()
-                .any(|&j| j != i && range(j) != range(i) && range(j).contains(&range(i)))
-        })
-        .collect();
-    outer.sort();
-    outer.dedup_by_key(|i| range(*i));
-    outer
+    let mut ranges: Vec<Range> = pieces.iter().map(|&i| decl.pieces[i].range).collect();
+    ranges.sort_by_key(|r| (r.start, r.stop));
+    let mut joined: Vec<Range> = Vec::new();
+    for range in ranges {
+        match joined.last_mut() {
+            Some(last) if range.start <= last.stop => last.stop = last.stop.max(range.stop),
+            _ => joined.push(range),
+        }
+    }
+    joined
         .into_iter()
-        .map(|i| Edit {
-            range: range(i),
+        .map(|range| Edit {
+            range,
             text: String::new(),
         })
         .collect()

@@ -1,0 +1,7 @@
+name = "xlint_lean"
+defaultTargets = ["xlint-lean"]
+
+[[lean_exe]]
+name = "xlint-lean"
+root = "Main"
+supportInterpreter = true
