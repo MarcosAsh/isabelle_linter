@@ -8,6 +8,10 @@ struct
 
 fun method_timeout ms = if ms <= 0 then NONE else SOME (Time.fromMilliseconds ms);
 
+(*try0's command is a markup string.*)
+fun plain ({name, command, time, state}: Try0.result) =
+  {name = name, command = XML.content_of (YXML.parse_body command), time = time, state = state};
+
 (*try0 says `apply` for a proof that leaves goals.*)
 fun closes ({command, ...}: Try0.result) = String.isPrefix "by " command;
 
@@ -33,7 +37,7 @@ val _ =
       val (res, t) = Linter_Query.timed limit (fn () => try0 (Toplevel.proof_of st));
     in
       (case res of
-        Exn.Res results => describe results ||> append (Linter_Query.times t)
+        Exn.Res results => describe (map plain results) ||> append (Linter_Query.times t)
       | _ => (Linter_Query.verdict res, Linter_Query.times t))
     end);
 
