@@ -26,6 +26,8 @@ structure Piece where
   line : Nat
   /-- Texts the definition lints try in place of the piece. -/
   replacements : Array String := #[]
+  /-- The list the piece is an item of, with its brackets. -/
+  whole : Option Range := none
   deriving ToJson
 
 structure Step where
@@ -132,19 +134,23 @@ def itemRanges (args : Array Syntax) (whole : Range) : Array (Range × Range) :=
       found := found.push (r, { start := previous.stop, stop := r.stop })
   return found
 
-/-- A lemma of a `simp [...]` list goes with one comma, the only one with the brackets and the
-space before them. -/
+/-- A lemma of a `simp [...]` list goes with one comma, and the last one left with the brackets
+and the space before them. -/
 def simpPieces (text : String) (list : Syntax) : Array Piece := Id.run do
   let some r := range? list | return #[]
   let bytes := text.toUTF8
+  let space := fun (b : UInt8) => b == 32 || b == 10
   let mut start := r.start
-  while start > 0 && bytes[start - 1]! != '['.toNat.toUInt8 do start := start - 1
+  while start > 0 && space bytes[start - 1]! do start := start - 1
   let mut stop := r.stop
-  while stop < bytes.size && bytes[stop]! != ']'.toNat.toUInt8 do stop := stop + 1
-  unless start > 1 && stop < bytes.size do return #[]
+  while stop < bytes.size && space bytes[stop]! do stop := stop + 1
+  -- `nontriviality α using a, b` has the same list without brackets
+  unless start > 1 && stop < bytes.size && bytes[start - 1]! == '['.toNat.toUInt8 && bytes[stop]! == ']'.toNat.toUInt8 do
+    return #[]
   let whole := { start := if bytes[start - 2]! == 32 then start - 2 else start - 1, stop := stop + 1 }
   return (itemRanges list.getArgs whole).map fun (item, range) =>
-    { kind := "fact", text := sub text item.start item.stop, range, line := lineNumber text item.start }
+    { kind := "fact", text := sub text item.start item.stop, range, line := lineNumber text item.start,
+      whole := some whole }
 
 partial def hasAtom (atom : String) (stx : Syntax) : Bool :=
   stx.isToken atom || stx.getArgs.any (hasAtom atom)
@@ -296,9 +302,10 @@ partial def declName (stx : Syntax) : Option String :=
   if stx.getKind == ``Lean.Parser.Command.declId then some stx[0].getId.toString
   else stx.getArgs.findSome? declName
 
+/-- Mathlib's `lemma` is a command of its own kind. -/
 def isTheorem (stx : Syntax) : Bool :=
-  stx.getKind == ``Lean.Parser.Command.declaration &&
-    (stx[1].getKind == ``Lean.Parser.Command.theorem || stx[1].getKind.toString.endsWith "lemma")
+  (stx.getKind == ``Lean.Parser.Command.declaration && stx[1].getKind == ``Lean.Parser.Command.theorem) ||
+    stx.getKind.toString.endsWith "lemma"
 
 /-- Search commands are only of use while writing. -/
 def exploration : List String := ["#find", "#loogle", "#leansearch", "#moogle", "#help"]

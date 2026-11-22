@@ -30,7 +30,17 @@ struct Unneeded {
 /// The pieces' deletions, with overlapping ranges joined, since a piece can lie inside another
 /// and two list items can share a comma.
 fn deletions(decl: &Decl, pieces: &[usize]) -> Vec<Edit> {
-    joined(pieces.iter().map(|&i| decl.pieces[i].range).collect())
+    let all_go = |whole: Range| {
+        let items = decl.pieces.iter().enumerate();
+        items
+            .filter(|(_, piece)| piece.whole == Some(whole))
+            .all(|(i, _)| pieces.contains(&i))
+    };
+    let range = |&i: &usize| match decl.pieces[i].whole {
+        Some(whole) if all_go(whole) => whole,
+        _ => decl.pieces[i].range,
+    };
+    joined(pieces.iter().map(range).collect())
 }
 
 pub(crate) fn joined(mut ranges: Vec<Range>) -> Vec<Edit> {

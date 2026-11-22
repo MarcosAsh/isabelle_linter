@@ -32,6 +32,9 @@ pub struct Piece {
     /// Texts `definitions` tries in place of the range. An empty one deletes it.
     #[serde(default)]
     pub replacements: Vec<String>,
+    /// The list the piece is an item of, brackets included, which goes once all its items go.
+    #[serde(default)]
+    pub whole: Option<Range>,
 }
 
 /// A proof step that closes its goal, like Isabelle's `by` or a terminal tactic.

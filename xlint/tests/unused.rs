@@ -79,6 +79,7 @@ fn piece(kind: &str, text: &str, start: usize) -> Piece {
         },
         line: 1,
         replacements: Vec::new(),
+        whole: None,
     }
 }
 
@@ -238,4 +239,35 @@ fn overlapping_edits_are_refused() {
         },
     ];
     assert!(fix::apply(SOURCE, &edits).is_err());
+}
+
+#[test]
+fn a_list_goes_with_its_brackets_once_every_item_goes() {
+    let source = "theorem t : g := by simp [a, b]";
+    let whole = Range {
+        start: source.find(" [").unwrap(),
+        stop: source.len(),
+    };
+    let mut d = decl("T:0", source, &[("fact", "a, "), ("fact", ", b")]);
+    d.pieces.iter_mut().for_each(|p| p.whole = Some(whole));
+    let mut prover = Fake {
+        needed: HashMap::from([(d.key.clone(), Vec::new())]),
+        frees: HashMap::new(),
+        decls: vec![d],
+        asked: 0,
+    };
+    let findings = lint(&mut prover);
+    let (edits, _) = fix::disjoint(&findings);
+    assert_eq!(
+        fix::apply(source, &edits).unwrap(),
+        "theorem t : g := by simp"
+    );
+
+    // with one item needed the other goes alone and the brackets stay
+    prover.needed.insert("T:0".to_string(), vec![1]);
+    let (edits, _) = fix::disjoint(&lint(&mut prover));
+    assert_eq!(
+        fix::apply(source, &edits).unwrap(),
+        "theorem t : g := by simp [b]"
+    );
 }

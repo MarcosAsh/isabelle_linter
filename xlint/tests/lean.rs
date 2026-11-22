@@ -2,8 +2,10 @@
 
 use std::path::Path;
 use std::process::Command;
-use xlint::prover::Server;
-use xlint::{census, retime};
+use xlint::lint::{Lint, Options};
+use xlint::lints::unused::Unused;
+use xlint::prover::{Prover, Server};
+use xlint::{census, fix, retime, rounds};
 
 fn server() -> Option<Server> {
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../provers/lean");
@@ -57,4 +59,34 @@ fn lean_times_the_commands_and_steps_of_the_example() {
             .iter()
             .all(|step| step.verdict == "closes" && step.runs_ms.len() == 3)
     );
+}
+
+#[test]
+fn lean_checks_a_lemma_like_a_theorem() {
+    let Some(mut prover) = server() else {
+        eprintln!("skipped: no lake");
+        return;
+    };
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../provers/lean/test/Lemma.lean");
+    let loaded = prover.load(&file.display().to_string()).unwrap();
+    let lemma = loaded.decls.iter().find(|decl| decl.name == "as_lemma");
+    let lemma = lemma.expect("the lemma is a declaration");
+    assert!(lemma.ok && lemma.kind == "theorem");
+    assert_eq!(lemma.pieces.len(), 1);
+}
+
+#[test]
+fn lean_drops_the_brackets_of_an_emptied_simp_list() {
+    let Some(mut prover) = server() else {
+        eprintln!("skipped: no lake");
+        return;
+    };
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../provers/lean/test/Lemma.lean");
+    let loaded = prover.load(&file.display().to_string()).unwrap();
+    let options = Options::default();
+    let answers = rounds::run(&mut prover, &Unused, &loaded.decls, &options, None).unwrap();
+    let findings = Unused.report(&loaded.decls, &answers, &options);
+    let (edits, _) = fix::disjoint(&findings);
+    let fixed = fix::apply(&std::fs::read_to_string(&file).unwrap(), &edits).unwrap();
+    assert!(fixed.ends_with("n + 0 = n := by\n  simp\n"), "{fixed}");
 }

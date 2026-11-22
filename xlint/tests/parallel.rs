@@ -28,6 +28,7 @@ impl Prover for Fake {
             range,
             line: 1,
             replacements: Vec::new(),
+            whole: None,
         };
         Ok(File {
             decls: vec![Decl {

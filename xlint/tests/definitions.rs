@@ -29,6 +29,7 @@ fn piece(kind: &str, text: &str, deleted: &str, replacements: &[&str]) -> Piece 
         range: range(deleted),
         line: 1 + SOURCE[..range(deleted).start].matches('\n').count(),
         replacements: replacements.iter().map(|r| r.to_string()).collect(),
+        whole: None,
     }
 }
 
