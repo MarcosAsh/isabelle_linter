@@ -142,7 +142,8 @@ fn rocq_times_the_commands_and_steps() {
         steps,
         [
             "do 3000000 idtac; reflexivity",
-            "auto using Nat.add_comm, Nat.le_refl with arith"
+            "auto using Nat.add_comm, Nat.le_refl with arith",
+            "apply Nat.add_0_r"
         ]
     );
 

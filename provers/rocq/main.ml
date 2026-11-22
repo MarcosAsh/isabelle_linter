@@ -121,10 +121,13 @@ let is_diagnostic text (s : sentence) =
   let word = first_word (sub text s.start s.stop) in
   List.mem word exploration || List.mem word tests
 
+(* A command inside a proof, like `Close Scope`, acts on the lemmas after it. *)
+let is_command c = (c >= 'A' && c <= 'Z') || c = '#'
+
 let is_tactic text (s : sentence) =
   let c = text.[s.start] in
   let word = first_word (sub text s.start s.stop) in
-  not (c = '{' || c = '}' || is_bullet c || word = "Proof" || closes_proof word || is_diagnostic text s)
+  not (c = '{' || c = '}' || is_bullet c || is_command c || closes_proof word || is_diagnostic text s)
 
 (* The first `word` of [from, till) that stands alone outside brackets, as its offset. *)
 let find_word text word from till =

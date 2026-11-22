@@ -14,4 +14,11 @@ Proof.
   auto using Nat.add_comm, Nat.le_refl with arith.
 Qed.
 
+Lemma scoped (n : nat) : n + 0 = n.
+Proof.
+  Open Scope bool_scope.
+  apply Nat.add_0_r.
+  Close Scope bool_scope.
+Qed.
+
 Compute 2 + 2.
