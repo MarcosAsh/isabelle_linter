@@ -130,7 +130,15 @@ in 0.7 s, and the ten slowest steps half of the step time. `unused` deletes 69 t
 files compile with every fix. `faster_step` finds nothing with steps of 20 ms or more searched.
 The four lints take 28 s.
 
-Mizar and parallel questions are not done.
+Mizar is compared through its own tools. `provers/mizar/xlint-mizar ARTICLE.miz...` runs relprem,
+relinfer, reliters, trivdemo, chklab and inacc (printed as `unused`) and irrths and irrvoc
+(`unused_imports`) on a copy of each article. It needs `MIZFILES` and the Mizar programs on `PATH`;
+Mizar 8.1.15 unpacks from its i386 tarball into `~/opt/mizar` without root. On `xboole_1` of MML
+5.106.1517 (116 theorems, 406 steps) the tools report 25 irrelevant inferences and one reference
+that can move, in 1.6 s. On `aofa_a00` (6,417 lines) relprem and relinfer take over nine minutes,
+so an MML sample has not been run.
+
+Parallel questions are not done.
 
 ## How it works
 

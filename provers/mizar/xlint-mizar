@@ -1,0 +1,35 @@
+#!/bin/sh
+# Mizar's own tools for unneeded references, steps and imports, printed like xlint findings.
+# Usage: xlint-mizar ARTICLE.miz...    (MIZFILES set, the Mizar programs on PATH)
+
+unused="relprem relinfer reliters trivdemo chklab inacc"
+imports="irrths irrvoc"
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT
+mkdir "$work/text"
+total=0
+
+for article in "$@"; do
+  name=$(basename "$article" .miz)
+  cp "$article" "$work/text/$name.miz" || exit 1
+  (cd "$work" && makeenv "text/$name" && verifier "text/$name") > /dev/null 2>&1
+  if [ -s "$work/text/$name.err" ]; then
+    echo "*** $article does not check" >&2
+    continue
+  fi
+  theorems=$(grep -c -E '^ *theorem( |$)' "$article")
+  steps=$(grep -o -w 'by' "$article" | wc -l)
+  echo "$article: $theorems theorems, $steps steps" >&2
+  for tool in $unused $imports; do
+    case " $imports " in *" $tool "*) lint=unused_imports ;; *) lint=unused ;; esac
+    (cd "$work" && "$tool" "text/$name") > /dev/null 2>&1
+    # 611 only closes the item that 610 opens
+    awk -v file="$article" -v lint="$lint" -v tool="$tool" '
+      FNR == NR { if ($1 == "#") code = $2; else if (code != "") { text[code] = $0; code = "" }; next }
+      $3 != 611 { printf "\n%s:%d: [%s] %s: %s (column %d)\n", file, $1, lint, tool, text[$3], $2 }
+      ' "$MIZFILES/mizar.msg" "$work/text/$name.err" > "$work/found"
+    cat "$work/found"
+    total=$((total + $(grep -c . "$work/found")))
+  done
+done
+printf '\n%d findings\n' "$total"

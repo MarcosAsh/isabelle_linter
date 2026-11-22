@@ -1,0 +1,24 @@
+environ
+
+ vocabularies XBOOLE_0, TARSKI;
+ notations TARSKI, XBOOLE_0;
+ constructors TARSKI, XBOOLE_0;
+ theorems XBOOLE_1, XBOOLE_0;
+
+begin
+
+reserve X, Y, Z for set;
+
+theorem Th1:
+  X c= Y & Y c= Z implies X c= Z by XBOOLE_1:1;
+
+theorem
+  X c= Y & Y c= Z implies X c= Z by Th1, XBOOLE_1:2;
+
+theorem
+  X c= Y & Y c= Z implies X c= Z
+proof
+  assume
+A1: X c= Y & Y c= Z;
+  thus thesis by A1, XBOOLE_1:1;
+end;
