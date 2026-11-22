@@ -42,6 +42,48 @@ object Tool {
       offsets
     }
 
+  /* The changed parts of a lemma only, so the rest keeps the file's spelling, like a raw ε. */
+  def changes(checked: String, fix: String, start: Int): List[(Text.Range, String)] = {
+    val (old_lines, new_lines) = (checked.split("(?<=\n)"), fix.split("(?<=\n)"))
+    val (n, m) = (old_lines.length, new_lines.length)
+    if (n.toLong * m > 50000000) List(Text.Range(start, start + checked.length) -> fix)
+    else {
+      val common = Array.ofDim[Int](n + 1, m + 1)
+      for (i <- n - 1 to 0 by -1; j <- m - 1 to 0 by -1)
+        common(i)(j) =
+          if (old_lines(i) == new_lines(j)) common(i + 1)(j + 1) + 1
+          else common(i + 1)(j) max common(i)(j + 1)
+      val edits = new scala.collection.mutable.ListBuffer[(Text.Range, String)]
+      val (removed, added) = (new StringBuilder, new StringBuilder)
+      var (i, j, offset) = (0, 0, start)
+      def flush(): Unit = {
+        val (before, after) = (Symbol.explode(removed.toString), Symbol.explode(added.toString))
+        val head = before.zip(after).takeWhile({ case (a, b) => a == b }).length
+        val tail =
+          before.drop(head).reverse.zip(after.drop(head).reverse).takeWhile({ case (a, b) => a == b }).length
+        val skip = before.take(head).mkString.length
+        val stop = removed.length - before.takeRight(tail).mkString.length
+        if (skip < stop || after.length > head + tail)
+          edits += Text.Range(offset + skip, offset + stop) -> after.slice(head, after.length - tail).mkString
+        offset += removed.length
+        removed.clear()
+        added.clear()
+      }
+      while (i < n || j < m) {
+        if (i < n && j < m && old_lines(i) == new_lines(j)) {
+          flush()
+          offset += old_lines(i).length
+          i += 1
+          j += 1
+        }
+        else if (j == m || (i < n && common(i + 1)(j) >= common(i)(j + 1))) { removed ++= old_lines(i); i += 1 }
+        else { added ++= new_lines(j); j += 1 }
+      }
+      flush()
+      edits.toList
+    }
+  }
+
   def apply_fixes(findings: List[Finding], progress: Progress): Unit =
     for ((theory, theory_findings) <- findings.filter(_.fix.isDefined).groupBy(_.lemma.theory)) {
       val path = theory.path
@@ -50,7 +92,8 @@ object Tool {
       val offset = file_offsets(text)
       val lemmas = theory_findings.groupBy(_.lemma.start).values.toList
       val fixed =
-        lemmas.map(lemma_fix).sortBy(_._1.start).reverse.foldLeft(text) { case (edited, (range, replacement)) =>
+        lemmas.map(lemma_fix).flatMap({ case (range, fix) => changes(range.substring(checked), fix, range.start) })
+          .sortBy(_._1.start).reverse.foldLeft(text) { case (edited, (range, replacement)) =>
           val place = Text.Range(offset(range.start), offset(range.stop))
           if (Symbol.encode(place.substring(edited)) != range.substring(checked)) error("File changed: " + path)
           edited.substring(0, place.start) + replacement + edited.substring(place.stop)
