@@ -2,21 +2,37 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use xlint::lint::{Finding, Options};
+use xlint::corpus::Corpus;
+use xlint::lint::Options;
 use xlint::prover::{Prover, Server};
-use xlint::{census, fix, lints, retime, rounds};
+use xlint::session::Session;
+use xlint::{census, jobs, retime};
 
-const USAGE: &str = "Usage: xlint -s SERVER [-F] [-l LINTS] [-L LOG] [-o NAME=VALUE] FILE...
+const USAGE: &str = "Usage: xlint -s SERVER [-F] [-j N] [-l LINTS] [-L LOG] [-o NAME=VALUE] FILE...
+       xlint run -d OUT (-s SERVER | -x TOOL) [-p PROJECT] [-b CHECK] [-t SECONDS] [-j N]
+                 [-l LINTS] [-o NAME=VALUE] [-f LIST] FILE...
        xlint census -s SERVER [-O TSV] [-n N] [-o timeout_ms=MS] FILE...
        xlint retime -s SERVER -I TSV [-O TSV] [-n N] [-o runs=N] [-o timeout_ms=MS]
 
   -s SERVER    the prover's server command, in one argument (\"lake exe xlint-lean\")
   -F           apply the fixes to the files
+  -j N         files linted at once (default: the cores but two); with more than
+               one, times are taken under load and the log says so
   -l LINTS     comma-separated lints to run (default: all)
   -L LOG       append every question and answer to LOG, as TSV
   -o NAME=VAL  set an option (timeout_ms, factor, batch, runs, unused_ahead,
                faster_step_slow_ms, faster_step_speedup, simp_hygiene_min,
                simp_scope_slow_ms, simp_scope_speedup)
+
+  run lints the files with -F on a copy of PROJECT, checks each fixed file,
+  and adds the files up in OUT/summary.tsv; files that are done are skipped.
+  -d OUT       logs, the copy and the summary go here
+  -p PROJECT   the files are relative to this directory; without it they are
+               linted where they are
+  -x TOOL      a linter of its own that prints findings like xlint, in place of -s
+  -b CHECK     run in the copy on each fixed file; a file that fails goes back
+  -t SECONDS   time limit of a file's lint, and of its check
+  -f LIST      a file with one file name per line
 
   census times each command and each closing step of the files and shows where
   the time goes. retime runs the N slowest steps of a census TSV again, alone.
@@ -34,6 +50,14 @@ struct Args {
     input: Option<PathBuf>,
     top: Option<usize>,
     options: Options,
+    /// The -o assignments as given, for the linter that `run` starts.
+    assignments: Vec<String>,
+    jobs: usize,
+    out: Option<PathBuf>,
+    project: Option<PathBuf>,
+    tool: Vec<String>,
+    check: Vec<String>,
+    limit: Option<u64>,
     files: Vec<String>,
 }
 
@@ -48,23 +72,47 @@ fn parse() -> Result<Args, String> {
         input: None,
         top: None,
         options: Options::default(),
+        assignments: Vec::new(),
+        jobs: jobs::default_jobs(),
+        out: None,
+        project: None,
+        tool: Vec::new(),
+        check: Vec::new(),
+        limit: None,
         files: Vec::new(),
     };
     let mut argv = std::env::args().skip(1).peekable();
-    if let Some(mode) = argv.next_if(|arg| arg == "census" || arg == "retime") {
+    if let Some(mode) = argv.next_if(|arg| ["census", "retime", "run"].contains(&arg.as_str())) {
         args.mode = mode;
     }
     while let Some(arg) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{arg} needs a value"));
+        let words = |text: String| text.split_whitespace().map(str::to_string).collect();
         match arg.as_str() {
-            "-s" => args.server = value()?.split_whitespace().map(str::to_string).collect(),
+            "-s" => args.server = words(value()?),
+            "-x" => args.tool = words(value()?),
+            "-b" => args.check = words(value()?),
+            "-d" => args.out = Some(PathBuf::from(value()?)),
+            "-p" => args.project = Some(PathBuf::from(value()?)),
+            "-j" => args.jobs = value()?.parse().map_err(|_| "-j needs a number")?,
+            "-t" => args.limit = Some(value()?.parse().map_err(|_| "-t needs a number")?),
+            "-f" => {
+                let list = value()?;
+                let text = std::fs::read_to_string(&list).map_err(|e| format!("{list}: {e}"))?;
+                args.files
+                    .extend(text.split_whitespace().map(str::to_string));
+            }
             "-F" => args.fix = true,
             "-l" => args.lints = Some(value()?.split(',').map(str::to_string).collect()),
             "-L" => args.log = Some(PathBuf::from(value()?)),
             "-O" => args.output = Some(PathBuf::from(value()?)),
             "-I" => args.input = Some(PathBuf::from(value()?)),
             "-n" => args.top = Some(value()?.parse().map_err(|_| "-n needs a number")?),
-            "-o" => args.options.set(&value()?)?,
+            "-o" => {
+                let assignment = value()?;
+                args.options.set(&assignment)?;
+                args.assignments.push(assignment);
+            }
             _ if arg.starts_with('-') => return Err(format!("unknown option {arg}")),
             _ => args.files.push(arg),
         }
@@ -74,8 +122,11 @@ fn parse() -> Result<Args, String> {
     } else {
         args.files.is_empty()
     };
-    if args.server.is_empty() || nothing_to_read {
+    if (args.server.is_empty() && args.tool.is_empty()) || nothing_to_read {
         return Err("a server and a file are needed".to_string());
+    }
+    if args.mode == "run" && args.out.is_none() {
+        return Err("run needs -d OUT".to_string());
     }
     Ok(args)
 }
@@ -159,48 +210,57 @@ fn run_retime(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn lint_file(prover: &mut dyn Prover, file: &str, args: &Args) -> Result<Vec<Finding>, String> {
-    let loaded = prover.load(file)?;
-    let decls = &loaded.decls;
-    eprintln!(
-        "{file}: {} of {} declarations check",
-        decls.iter().filter(|d| d.ok && d.kind != "imports").count(),
-        decls.iter().filter(|d| d.kind != "imports").count()
-    );
-    let mut findings = Vec::new();
-    for lint in lints::all() {
-        if args
-            .lints
-            .as_ref()
-            .is_some_and(|names| !names.iter().any(|n| n == lint.name()))
-        {
-            continue;
+fn run_lint(args: &Args) -> Result<Option<usize>, String> {
+    let session = Session {
+        lints: args.lints.as_deref(),
+        options: &args.options,
+        log: args.log.as_deref(),
+        fix: args.fix,
+        jobs: args.jobs,
+    };
+    let start = || start(args).map(|server| Box::new(server) as Box<dyn Prover>);
+    let (findings, failed) = session.lint_files(&args.files, start, &mut std::io::stdout())?;
+    if failed > 0 {
+        return Err(format!("{failed} files failed"));
+    }
+    Ok(Some(findings))
+}
+
+/// Each file gets a linter process of its own, so that one that hangs can be killed.
+fn run_corpus(args: &Args) -> Result<(), String> {
+    let (linter, log_flag) = if args.tool.is_empty() {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mut linter = vec![
+            exe.display().to_string(),
+            "-F".into(),
+            "-j".into(),
+            "1".into(),
+        ];
+        linter.extend(["-s".to_string(), args.server.join(" ")]);
+        if let Some(lints) = &args.lints {
+            linter.extend(["-l".to_string(), lints.join(",")]);
         }
-        let answers = rounds::run(
-            prover,
-            lint.as_ref(),
-            decls,
-            &args.options,
-            args.log.as_deref(),
-        )?;
-        findings.extend(lint.read(&loaded));
-        findings.extend(lint.report(decls, &answers, &args.options));
-    }
-    for finding in &findings {
-        println!(
-            "\n{file}:{}: [{}] {}",
-            finding.line, finding.lint, finding.message
-        );
-    }
-    if args.fix {
-        let (edits, fixed) = fix::disjoint(&findings);
-        if !edits.is_empty() {
-            let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
-            std::fs::write(file, fix::apply(&text, &edits)?).map_err(|e| format!("{file}: {e}"))?;
-            println!("Fixed {fixed} findings in {file}");
+        for assignment in &args.assignments {
+            linter.extend(["-o".to_string(), assignment.clone()]);
         }
-    }
-    Ok(findings)
+        (linter, Some("-L".to_string()))
+    } else {
+        (args.tool.clone(), None)
+    };
+    let out = args.out.clone().unwrap();
+    let corpus = Corpus {
+        out: out.clone(),
+        project: args.project.clone(),
+        linter,
+        log_flag,
+        build: args.check.clone(),
+        limit: args.limit,
+        jobs: args.jobs,
+    };
+    let summary = corpus.run(&args.files)?;
+    write(&Some(out.join("summary.tsv")), summary.to_tsv())?;
+    println!("{}", summary.sentence());
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -214,13 +274,8 @@ fn main() -> ExitCode {
     let result = match args.mode.as_str() {
         "census" => run_census(&args).map(|_| None),
         "retime" => run_retime(&args).map(|_| None),
-        _ => args
-            .files
-            .iter()
-            .try_fold(0, |count, file| {
-                Ok::<usize, String>(count + lint_file(&mut start(&args)?, file, &args)?.len())
-            })
-            .map(Some),
+        "run" => run_corpus(&args).map(|_| None),
+        _ => run_lint(&args),
     };
     match result {
         Ok(count) => {

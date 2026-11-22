@@ -102,6 +102,21 @@ lake env xlint census -s xlint-lean -O census.tsv FILE.lean     # where the time
 lake env xlint retime -s xlint-lean -I census.tsv -n 100        # the slowest steps again, alone
 ```
 
+`-j N` lints N files at once, each with its own server (default: the cores but two). Reports and
+the question log keep the order of the files. With more than one file at a time the times are
+taken under load, and the first row of the log says so; `census` and `retime` run one file at a
+time.
+
+```bash
+xlint run -d OUT -p PROJECT -s SERVER -b CHECK -t 600 -f FILES    # a corpus, on a copy of PROJECT
+```
+
+`xlint run` lints the listed files with `-F` on a copy of the project, runs `CHECK FILE` on each
+fixed file and puts back a file that fails. `OUT/summary.tsv` has a row per file and their total,
+with the columns `scripts/unused_summary.py` prints for Isabelle. A file with a row is skipped on
+the next run. `-x TOOL` takes another linter that prints findings the same way, such as
+`xlint-mizar`.
+
 The census TSV has the columns of `isabelle linter_census -O`. A `step` row is a tactic that closes
 its goal, timed once more on that goal, so its time is also inside the row of its theorem.
 
@@ -137,8 +152,6 @@ Mizar 8.1.15 unpacks from its i386 tarball into `~/opt/mizar` without root. On `
 5.106.1517 (116 theorems, 406 steps) the tools report 25 irrelevant inferences and one reference
 that can move, in 1.6 s. On `aofa_a00` (6,417 lines) relprem and relinfer take over nine minutes,
 so an MML sample has not been run.
-
-Parallel questions are not done.
 
 ## How it works
 
