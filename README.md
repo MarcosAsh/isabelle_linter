@@ -120,10 +120,10 @@ the next run. `-x TOOL` takes another linter that prints findings the same way, 
 The census TSV has the columns of `isabelle linter_census -O`. A `step` row is a tactic that closes
 its goal, timed once more on that goal, so its time is also inside the row of its theorem.
 
-Every lint runs on Lean 4.36.0. On six Mathlib v4.36.0 files (835 commands, 516 closing steps) the
-census takes 36 s on a laptop. Steps hold 26 to 29% of the commands' time, the ten slowest steps
-28% of step time, and `simpa`, `grind` and `simp` half of it. The 30 slowest steps take 4.2 s in
-the census and 3.5 s re-timed alone (three runs, medians).
+Every lint runs on Lean 4.36.0. On six Mathlib v4.36.0 files (510 commands, 252 closing steps) the
+census takes 44 s on a laptop. Steps hold 14% of the commands' time, the ten slowest steps 40% of
+step time, and `simp` and `simpa` two thirds of it. The 30 slowest steps take 2.8 s in the census
+and 3.1 s re-timed alone (three runs, medians).
 
 `provers/rocq` is the server for Rocq 9.2. It links Rocq's own libraries and keeps the state
 before every sentence, so a question starts at its lemma.
@@ -150,8 +150,41 @@ relinfer, reliters, trivdemo, chklab and inacc (printed as `unused`) and irrths 
 (`unused_imports`) on a copy of each article. It needs `MIZFILES` and the Mizar programs on `PATH`;
 Mizar 8.1.15 unpacks from its i386 tarball into `~/opt/mizar` without root. On `xboole_1` of MML
 5.106.1517 (116 theorems, 406 steps) the tools report 25 irrelevant inferences and one reference
-that can move, in 1.6 s. On `aofa_a00` (6,417 lines) relprem and relinfer take over nine minutes,
-so an MML sample has not been run.
+that can move, in 1.6 s.
+
+### Samples
+
+`unused` on random files of each library (`random.Random(1).sample` of the sorted file names), run
+with `xlint run` on a laptop, several files at once, so the times were taken under load. The
+Isabelle row is the 93 finished entries of the AFP sample.
+
+| corpus | files | lemmas | steps | per lemma | lemmas with a finding | pieces per 100 steps | timed fixes |
+|---|---|---|---|---|---|---|---|
+| Isabelle AFP | 93 entries | 24,208 | 96,718 | 4.0 | 22.1% | 15.0 | 2,156 -> 2,194 s |
+| Lean Mathlib v4.36.0 | 197 of 200 | 2,133 | 3,598 | 1.7 | 8.2% | 7.9 | 55.9 -> 51.3 s |
+| Rocq 9.2 standard library | 148 of 150 | 2,682 | 5,940 | 2.2 | 12.0% | 9.6 | 22.3 -> 22.2 s |
+| Mizar MML 5.106.1517 | 68 of 100 | 3,178 | 42,256 | 13.3 | | 6.3 | |
+
+- Mathlib: 278 lemmas of `simp` lists and 8 `have`s go. Three files do not pass `lean FILE` as
+  written, so their fixes are unchecked and left out. All other fixed files pass.
+- Rocq: 528 tactic sentences, 22 `using` lemmas and `rewrite` rules, 16 `assert`s and 2 hint
+  databases go. `QArith_base.v` no longer compiles with its fixes, and one file ran over 300 s.
+- Mizar: 2,502 irrelevant inferences (relinfer), 157 references that can move (reliters), 6
+  justifications that can be straightforward and 3 inaccessible items. relprem reports nothing.
+  32 articles ran over 300 s, which leaves out the longest ones.
+
+What is counted differs between the provers, so the rows cannot be compared directly:
+
+- A lemma is an Isabelle lemma the linter checked, a Lean `theorem` or `lemma` with a `by` proof, a
+  Rocq proof that ends in `Qed`, and a Mizar `theorem`.
+- A step is an Isabelle `by` or `apply`, a Lean tactic that closes its goal, a Rocq tactic sentence
+  that leaves fewer goals, and a Mizar `by`.
+- A piece is a fact, `have` or `apply` in Isabelle; a `simp` list lemma or a `have` in Lean, where
+  `rw` lists and term proofs are not searched; a tactic sentence, `using` lemma, `rewrite` rule or
+  hint database in Rocq; and one hit of a Mizar tool.
+- Isabelle, Lean and Rocq pieces were removed together and the result checked again. Mizar's hits
+  are its tools' reports, with nothing removed, and several can fall in one theorem, so the row has
+  no share of lemmas.
 
 ## How it works
 

@@ -87,7 +87,7 @@ impl Corpus {
         }
     }
 
-    /// Lint, then check; a file whose lint or check fails goes back to its original, so the
+    /// Lint, then check. A file whose lint or check fails goes back to its original, so the
     /// files that import it still see one that checks.
     fn file(&self, file: &str) -> Result<String, String> {
         let name = logs_name(file);
@@ -121,6 +121,22 @@ impl Corpus {
         if status != "ok" {
             self.restore(file)?;
         }
+        // a fix is not to blame if the file as written fails the check too
+        let status = match status.as_str() {
+            "FAILED"
+                if run(
+                    &self.build,
+                    file,
+                    &dir,
+                    &path("control"),
+                    &path("control.err"),
+                    self.limit,
+                )? != Some(0) =>
+            {
+                "baseline-fails".to_string()
+            }
+            _ => status,
+        };
         std::fs::write(path("build"), format!("{status}\n")).map_err(|e| e.to_string())?;
         Ok(status)
     }

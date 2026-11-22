@@ -65,10 +65,14 @@ fn corpus(dir: &Path) -> Corpus {
         project: Some(dir.join("project")),
         linter: vec!["sh".to_string(), linter(dir)],
         log_flag: None,
-        // a fixed file checks unless it is the one called bad
-        build: ["sh", "-c", "case $0 in bad*) exit 1 ;; esac"]
-            .map(str::to_string)
-            .to_vec(),
+        // bad.txt fails once fixed, and base.txt fails as written too
+        build: [
+            "sh",
+            "-c",
+            "case $0 in base*) exit 1 ;; bad*) grep -q unneeded $0 ;; esac",
+        ]
+        .map(str::to_string)
+        .to_vec(),
         limit: Some(2),
         jobs: 2,
     }
@@ -78,7 +82,7 @@ fn project(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("xlint-corpus-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("project")).unwrap();
-    for file in ["a.txt", "bad.txt", "clean.txt", "hang.txt"] {
+    for file in ["a.txt", "bad.txt", "base.txt", "clean.txt", "hang.txt"] {
         let text = if file == "clean.txt" {
             "needed\n"
         } else {
@@ -92,10 +96,13 @@ fn project(name: &str) -> PathBuf {
 #[test]
 fn files_are_fixed_checked_and_added_up() {
     let dir = project("run");
-    let files = ["a.txt", "bad.txt", "clean.txt", "hang.txt"].map(str::to_string);
+    let files = ["a.txt", "bad.txt", "base.txt", "clean.txt", "hang.txt"].map(str::to_string);
     let summary = corpus(&dir).run(&files).unwrap();
     let builds: Vec<&str> = summary.rows.iter().map(|row| row.build.as_str()).collect();
-    assert_eq!(builds, ["ok", "FAILED", "ok", "lint timeout"]);
+    assert_eq!(
+        builds,
+        ["ok", "FAILED", "baseline-fails", "ok", "lint timeout"]
+    );
     // the files whose check passed: a.txt with its piece, clean.txt with none
     let total = &summary.total;
     assert_eq!(
@@ -115,7 +122,7 @@ fn files_are_fixed_checked_and_added_up() {
         std::fs::read_to_string(dir.join("project/a.txt")).unwrap(),
         "needed unneeded\n"
     );
-    assert!(summary.to_tsv().lines().count() == 6);
+    assert!(summary.to_tsv().lines().count() == 7);
 
     // a second run finds every file done and lints nothing
     let ran = std::fs::read_to_string(dir.join("out/ran")).unwrap();
