@@ -108,8 +108,11 @@ its goal, timed once more on that goal, so its time is also inside the row of it
 Every lint runs on Lean 4.36.0. On six Mathlib v4.36.0 files (835 commands, 516 closing steps) the
 census takes 36 s on a laptop. Steps hold 26 to 29% of the commands' time, the ten slowest steps
 28% of step time, and `simpa`, `grind` and `simp` half of it. The 30 slowest steps take 4.2 s in
-the census and 3.5 s re-timed alone (three runs, medians). Rocq, Mizar and parallel questions are
-not done.
+the census and 3.5 s re-timed alone (three runs, medians).
+
+`provers/rocq` is the server for Rocq 9.2 (`dune build` in an opam switch with `rocq-prover` and
+`yojson`). It drives `rocq repl` and so far answers only `unused`, on a proof's tactic sentences.
+Mizar and parallel questions are not done.
 
 ## How it works
 
