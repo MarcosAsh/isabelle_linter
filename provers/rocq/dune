@@ -1,4 +1,4 @@
 (executable
  (name main)
  (public_name xlint-rocq)
- (libraries unix str yojson))
+ (libraries unix str yojson rocq-runtime.toplevel))

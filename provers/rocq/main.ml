@@ -1,50 +1,11 @@
-(* The Rocq server of xlint. It drives one `rocq repl` and goes back to the state before a
-   lemma to check it again with edited text. Offsets are bytes into the file. *)
+(* The Rocq server of xlint. It keeps the state before every sentence, so a question starts at
+   its lemma. Offsets are bytes into the file. *)
 
 let sub text start stop = String.sub text start (stop - start)
 
-(* sentences *)
-
 let is_blank c = c = ' ' || c = '\n' || c = '\t' || c = '\r'
 
-(* The end of the comment that starts at `i`. Comments nest. *)
-let rec skip_comment text i depth =
-  let n = String.length text in
-  if i + 1 >= n then n
-  else if text.[i] = '(' && text.[i + 1] = '*' then skip_comment text (i + 2) (depth + 1)
-  else if text.[i] = '*' && text.[i + 1] = ')' then
-    if depth = 1 then i + 2 else skip_comment text (i + 2) (depth - 1)
-  else skip_comment text (i + 1) depth
-
-let rec skip_blank text i =
-  let n = String.length text in
-  if i < n && is_blank text.[i] then skip_blank text (i + 1)
-  else if i + 1 < n && text.[i] = '(' && text.[i + 1] = '*' then skip_blank text (skip_comment text (i + 2) 1)
-  else i
-
 let is_bullet c = c = '-' || c = '+' || c = '*'
-
-(* The next sentence from `i`, as (start, stop). Bullets and braces are sentences only in a proof. *)
-let next_sentence text i in_proof =
-  let n = String.length text in
-  let start = skip_blank text i in
-  if start >= n then None
-  else if in_proof && (text.[start] = '{' || text.[start] = '}') then Some (start, start + 1)
-  else if in_proof && is_bullet text.[start] then begin
-    let stop = ref start in
-    while !stop < n && text.[!stop] = text.[start] do incr stop done;
-    Some (start, !stop)
-  end
-  else begin
-    let rec scan i =
-      if i >= n then n
-      else if text.[i] = '"' then scan ((try String.index_from text (i + 1) '"' with Not_found -> n - 1) + 1)
-      else if i + 1 < n && text.[i] = '(' && text.[i + 1] = '*' then scan (skip_comment text (i + 2) 1)
-      else if text.[i] = '.' && (i + 1 = n || is_blank text.[i + 1]) then i + 1
-      else scan (i + 1)
-    in
-    Some (start, scan start)
-  end
 
 let first_word sentence =
   let stop = ref 0 in
@@ -52,64 +13,408 @@ let first_word sentence =
   while !stop < n && (match sentence.[!stop] with 'A' .. 'Z' | 'a' .. 'z' | '_' -> true | _ -> false) do incr stop done;
   String.sub sentence 0 !stop
 
-let opens_proof word =
-  List.mem word [ "Lemma"; "Theorem"; "Corollary"; "Proposition"; "Fact"; "Remark"; "Example"; "Goal" ]
-
 let closes_proof word = List.mem word [ "Qed"; "Defined"; "Admitted"; "Abort"; "Save" ]
 
-(* the repl *)
+(* Commands that only print. A search is of use while writing a proof, a computation may be a test. *)
+let exploration = [ "Search"; "SearchPattern"; "SearchRewrite"; "About"; "Locate"; "Check"; "Print"; "Show" ]
 
-type repl = { pid : int; input : out_channel; output : Unix.file_descr; mutable state : int; mutable depth : int }
+let tests = [ "Compute"; "Eval"; "Fail" ]
 
-(* `name < state |open proofs| depth < `, as `-emacs` prints it *)
-let prompt = Str.regexp "<prompt>[^<]*< \\([0-9]+\\) |\\([^|]*\\)| [0-9]+ < </prompt>"
+(* Tried in place of a closing step. One that needs a library the file lacks just fails. *)
+let closers =
+  [ "auto"; "eauto"; "easy"; "trivial"; "reflexivity"; "assumption"; "congruence"; "tauto"; "intuition";
+    "firstorder"; "lia"; "nia"; "now auto" ]
 
-(* Read up to the next prompt, or interrupt the repl after `timeout_ms`. Returns what it wrote
-   and whether it ran out of time. *)
-let read_reply repl timeout_ms =
-  let buffer = Buffer.create 1024 in
-  let chunk = Bytes.create 65536 in
-  let deadline = Unix.gettimeofday () +. (float_of_int timeout_ms /. 1000.) in
-  let late = ref false in
-  let rec loop () =
-    let text = Buffer.contents buffer in
-    match Str.search_backward prompt text (String.length text) with
-    | _ when Str.match_end () = String.length text ->
-      repl.state <- int_of_string (Str.matched_group 1 text);
-      repl.depth <- (if Str.matched_group 2 text = "" then 0 else 1);
-      text
-    | _ | (exception Not_found) ->
-      let left = if !late then 60. else deadline -. Unix.gettimeofday () in
-      if left <= 0. then begin
-        late := true;
-        Unix.kill repl.pid Sys.sigint;
-        loop ()
-      end
-      else begin
-        (match Unix.select [ repl.output ] [] [] left with
-         | [], _, _ -> ()
-         | _ ->
-           let n = Unix.read repl.output chunk 0 (Bytes.length chunk) in
-           if n = 0 then failwith "the Rocq repl closed its output";
-           Buffer.add_subbytes buffer chunk 0 n);
-        loop ()
-      end
+(* running Rocq *)
+
+let error_text = function Failure message -> message | e -> Pp.string_of_ppcmds (CErrors.iprint (Exninfo.capture e))
+
+let depth (st : Vernacstate.t) =
+  match st.interp.lemmas with
+  | None -> 0
+  | Some stack -> List.length (Vernacstate.LemmaStack.get_all_proof_names stack)
+
+(* Goals of the innermost proof, with those a focus set aside and the shelved ones. *)
+let open_goals (st : Vernacstate.t) =
+  match st.interp.lemmas with
+  | None -> 0
+  | Some stack ->
+    Vernacstate.LemmaStack.with_top stack ~f:(fun proof ->
+        let Proof.{ goals; stack; sigma; _ } = Proof.data (Declare.Proof.get proof) in
+        List.length goals + List.length (Evd.shelf sigma)
+        + List.fold_left (fun n (left, right) -> n + List.length left + List.length right) 0 stack)
+
+(* The next sentence of the stream, parsed in the state `st`, which must be the current one. *)
+let parse (st : Vernacstate.t) stream =
+  let mode = Option.map (fun _ -> Synterp.get_default_proof_mode ()) st.interp.lemmas in
+  Procq.Entry.parse (Pvernac.main_entry mode) stream
+
+let interp st command = Vernacinterp.interp ~intern:Vernacinterp.fs_intern ~st command
+
+(* Run every sentence of `text` from `st`. `each` sees a sentence's range in `text` and the states
+   around it, and says whether to go on. Returns the last state. *)
+let run_text st text each =
+  Vernacstate.unfreeze_full_state st;
+  let stream = Procq.Parsable.make (Gramlib.Stream.of_string text) in
+  let rec go st =
+    match parse st stream with
+    | None -> st
+    | Some command ->
+      let loc = Option.get command.CAst.loc in
+      let after = interp st command in
+      if each (loc.Loc.bp, loc.Loc.ep) st after then go after else after
   in
-  let text = loop () in
-  (text, !late)
+  go st
 
-let has_error reply =
-  try ignore (Str.search_forward (Str.regexp "^Error:\\|^Anomaly") reply 0); true with Not_found -> false
+(* the loaded file *)
 
-(* Run one sentence. Returns the verdict, the ms and the repl's output. *)
-let feed repl sentence timeout_ms =
-  let line = String.map (fun c -> if c = '\n' || c = '\r' then ' ' else c) sentence in
+type sentence = {
+  start : int;
+  stop : int;
+  before : Vernacstate.t;
+  ms : int;
+  goals : int;  (* open goals after it *)
+}
+
+type step = { sentence : int; from : int; till : int }
+
+type decl = {
+  key : string;
+  name : string;
+  kind : string;
+  first : int;  (* index of its statement in the sentences *)
+  last : int;
+  ok : bool;
+  steps : step list;
+  pieces : Yojson.Safe.t list;
+}
+
+type loaded = { file : string; text : string; sentences : sentence array; decls : decl list }
+
+let line_number text pos =
+  let n = ref 1 in
+  String.iteri (fun i c -> if i < pos && c = '\n' then incr n) text;
+  !n
+
+let range start stop = `Assoc [ ("start", `Int start); ("stop", `Int stop) ]
+
+let first_line source = List.hd (String.split_on_char '\n' source)
+
+(* The lines of a range that fills them, else the range. *)
+let with_lines text start stop =
+  let line_start = try String.rindex_from text (max 0 (start - 1)) '\n' + 1 with Not_found -> 0 in
+  let line_stop = try String.index_from text stop '\n' + 1 with Not_found -> String.length text in
+  let blank a b = String.for_all is_blank (sub text a b) in
+  if (start = 0 || blank line_start start) && blank stop line_stop then (line_start, line_stop) else (start, stop)
+
+let piece_json text kind start stop (from, till) =
+  `Assoc
+    [ ("kind", `String kind); ("text", `String (first_line (sub text start stop))); ("range", range from till);
+      ("line", `Int (line_number text start)) ]
+
+let tactic_piece text (s : sentence) =
+  let word = first_word (sub text s.start s.stop) in
+  let kind = if List.mem word [ "assert"; "pose"; "have"; "enough"; "specialize" ] then "have" else "tactic" in
+  piece_json text kind s.start s.stop (with_lines text s.start s.stop)
+
+let is_diagnostic text (s : sentence) =
+  let word = first_word (sub text s.start s.stop) in
+  List.mem word exploration || List.mem word tests
+
+let is_tactic text (s : sentence) =
+  let c = text.[s.start] in
+  let word = first_word (sub text s.start s.stop) in
+  not (c = '{' || c = '}' || is_bullet c || word = "Proof" || closes_proof word || is_diagnostic text s)
+
+(* The first `word` of [from, till) that stands alone outside brackets, as its offset. *)
+let find_word text word from till =
+  let n = String.length word in
+  let is_name c = match c with 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '_' | '\'' | '.' -> true | _ -> false in
+  let rec scan i depth =
+    if i + n > till then None
+    else
+      match text.[i] with
+      | '(' | '[' | '{' -> scan (i + 1) (depth + 1)
+      | ')' | ']' | '}' -> scan (i + 1) (depth - 1)
+      | _ when depth = 0 && sub text i (i + n) = word && (i = from || not (is_name text.[i - 1]))
+               && (i + n = till || not (is_name text.[i + n])) -> Some i
+      | _ -> scan (i + 1) depth
+  in
+  scan from 0
+
+(* The items of [from, till), split at `separator` outside brackets, each trimmed. *)
+let items text separator from till =
+  let trim (a, b) =
+    let a = ref a and b = ref b in
+    while !a < !b && is_blank text.[!a] do incr a done;
+    while !b > !a && is_blank text.[!b - 1] do decr b done;
+    (!a, !b)
+  in
+  let rec scan i depth start found =
+    if i >= till then List.rev (trim (start, till) :: found)
+    else
+      match text.[i] with
+      | '(' | '[' | '{' -> scan (i + 1) (depth + 1) start found
+      | ')' | ']' | '}' -> scan (i + 1) (depth - 1) start found
+      | c when depth = 0 && (c = separator || (separator = ' ' && is_blank c)) ->
+        scan (i + 1) depth (i + 1) (trim (start, i) :: found)
+      | _ -> scan (i + 1) depth start found
+  in
+  List.filter (fun (a, b) -> a < b) (scan from 0 from [])
+
+(* Deleting an item removes it up to the next one, or `whole` if it is the only one. With
+   `together` a longer list is a piece too, as its items cannot all go one by one. *)
+let item_pieces ?(together = true) text kind found whole =
+  let all = Array.of_list found in
+  let n = Array.length all in
+  let each =
+    List.mapi
+      (fun i (a, b) ->
+        let removed = if n = 1 then whole else if i + 1 < n then (a, fst all.(i + 1)) else (snd all.(i - 1), b) in
+        piece_json text kind a b removed)
+      found
+  in
+  if together && n > 1 then piece_json text kind (fst all.(0)) (snd all.(n - 1)) whole :: each else each
+
+(* The lemmas after `using`, the hint databases after `with` and the rewrite rules of a
+   sentence that is one tactic. *)
+let fact_pieces text (s : sentence) =
+  let stop = s.stop - 1 in
+  let word = first_word (sub text s.start stop) in
+  let plain = find_word text ";" s.start stop = None && find_word text "by" s.start stop = None in
+  if not plain then []
+  else if List.mem word [ "auto"; "eauto"; "trivial" ] then begin
+    let list keyword at till =
+      let found = items text (if keyword = "using" then ',' else ' ') (at + String.length keyword) till in
+      let from = if at > s.start && text.[at - 1] = ' ' then at - 1 else at in
+      item_pieces text (if keyword = "using" then "fact" else "hint database") found (from, till)
+    in
+    match (find_word text "using" s.start stop, find_word text "with" s.start stop) with
+    | Some u, Some w when u < w -> list "using" u w @ list "with" w stop
+    | Some u, None -> list "using" u stop
+    | None, Some w -> list "with" w stop
+    | _ -> []
+  end
+  else if word = "rewrite" && find_word text "in" s.start stop = None then begin
+    let found = items text ',' (s.start + String.length word) stop in
+    if List.length found < 2 then [] else item_pieces ~together:false text "fact" found (s.start, s.stop)
+  end
+  else []
+
+(* Each module of a `Require Import`, which goes with its sentence if it is the only one. A
+   `Require Export` reaches the files that import this one, so it is only reported. *)
+let import_pieces text (s : sentence) =
+  let stop = s.stop - 1 in
+  match find_word text "Require" s.start stop with
+  | None -> []
+  | Some require -> (
+    let after = require + String.length "Require" in
+    let keyword word = Option.map (fun at -> (word, at)) (find_word text word after stop) in
+    match List.find_map keyword [ "Import"; "Export" ] with
+    | None -> []
+    | Some (word, at) ->
+      let kind = if word = "Import" then "import" else "public import" in
+      item_pieces text kind (items text ' ' (at + String.length word) stop) (with_lines text s.start s.stop))
+
+let diagnostic_json text (s : sentence) =
+  let source = sub text s.start s.stop in
+  let name = first_word source in
+  let from, till = with_lines text s.start s.stop in
+  `Assoc
+    [ ("name", `String name); ("text", `String (first_line source));
+      ("category", `String (if List.mem name exploration then "exploration" else "test")); ("range", range from till);
+      ("line", `Int (line_number text s.start)); ("ms", `Int s.ms) ]
+
+let load initial file =
+  let text = In_channel.with_open_bin file In_channel.input_all in
+  let sentences = ref [] in
+  let time = ref (Unix.gettimeofday ()) in
+  let each (start, stop) before after =
+    let now = Unix.gettimeofday () in
+    sentences := { start; stop; before; ms = int_of_float ((now -. !time) *. 1000.); goals = open_goals after } :: !sentences;
+    time := now;
+    true
+  in
+  let final =
+    try run_text initial text each
+    with e ->
+      let at = match !sentences with s :: _ -> s.stop | [] -> 0 in
+      failwith (Printf.sprintf "%s: after line %d: %s" file (line_number text at) (error_text e))
+  in
+  let sentences = Array.of_list (List.rev !sentences) in
+  let count = Array.length sentences in
+  let after i = if i + 1 < count then sentences.(i + 1).before else final in
+  let goals_before i = if i = 0 then 0 else sentences.(i - 1).goals in
+  let decls = ref [] in
+  let opened = ref None in
+  Array.iteri
+    (fun i (s : sentence) ->
+      match !opened with
+      | None when depth s.before = 0 && depth (after i) > 0 ->
+        let names = Vernacstate.LemmaStack.get_all_proof_names (Option.get (after i).interp.lemmas) in
+        opened := Some (i, Names.Id.to_string (List.hd names))
+      | Some (first, name) when depth (after i) = 0 ->
+        let body = List.init (i - first - 1) (fun k -> first + 1 + k) in
+        let tactics = List.filter (fun k -> is_tactic text sentences.(k)) body in
+        let closing k =
+          let s = sentences.(k) in
+          if s.goals < goals_before k then Some { sentence = k; from = s.start; till = s.stop - 1 } else None
+        in
+        let pieces k = tactic_piece text sentences.(k) :: fact_pieces text sentences.(k) in
+        decls :=
+          { key = Printf.sprintf "%s:%d" file sentences.(first).start; name; kind = "theorem"; first; last = i;
+            ok = first_word (sub text s.start s.stop) = "Qed"; steps = List.filter_map closing tactics;
+            pieces = List.concat_map pieces tactics }
+          :: !decls;
+        opened := None
+      | _ -> ())
+    sentences;
+  let imports =
+    { key = file ^ ":imports"; name = "imports"; kind = "imports"; first = 0; last = count - 1; ok = count > 0;
+      steps = []; pieces = List.concat_map (import_pieces text) (Array.to_list sentences) }
+  in
+  { file; text; sentences; decls = imports :: List.rev !decls }
+
+let apply_edits text start stop edits =
+  let latest_first = List.sort (fun (a, _, _) (b, _, _) -> compare b a) edits in
+  let out, upto =
+    List.fold_left
+      (fun (out, upto) (from, till, replacement) -> (replacement ^ sub text till upto ^ out, from))
+      ("", stop) latest_first
+  in
+  sub text start upto ^ out
+
+(* `run` under a time limit, as its verdict, the ms it took and its message. *)
+let timed timeout_ms run =
   let start = Unix.gettimeofday () in
-  output_string repl.input (line ^ "\n");
-  flush repl.input;
-  let reply, late = read_reply repl timeout_ms in
-  let ms = int_of_float ((Unix.gettimeofday () -. start) *. 1000.) in
-  ((if late then "timeout" else if has_error reply then "fails" else "closes"), ms, reply)
+  let verdict, message =
+    match Control.timeout (float_of_int timeout_ms /. 1000.) run () with
+    | Ok result -> result
+    | Error _ -> ("timeout", "")
+    | exception e -> ("fails", error_text e)
+  in
+  (verdict, int_of_float ((Unix.gettimeofday () -. start) *. 1000.), message)
+
+(* Check the declaration once with the edits, from the state before it. The imports are the
+   whole file. *)
+let run_once loaded decl edits timeout_ms =
+  let whole = decl.kind = "imports" in
+  let first, last = (loaded.sentences.(decl.first), loaded.sentences.(decl.last)) in
+  let start, stop = if whole then (0, String.length loaded.text) else (first.start, last.stop) in
+  let source = apply_edits loaded.text start stop edits in
+  let outside = depth first.before in
+  timed timeout_ms (fun () ->
+      let closed = ref false in
+      let extra = ref false in
+      let each _ _ after =
+        if !closed then extra := true;
+        if (not whole) && depth after = outside then closed := true;
+        not !extra
+      in
+      let final = run_text first.before source each in
+      if !extra then ("fails", "the edited text is more than one lemma")
+      else if depth final <> outside then ("fails", "the proof is not finished")
+      else ("closes", ""))
+
+(* Run `text` in place of the step. It must leave as many goals as the step does. *)
+let step_once loaded step text timeout_ms =
+  let s = loaded.sentences.(step.sentence) in
+  timed timeout_ms (fun () ->
+      let count = ref 0 in
+      let final = run_text s.before (text ^ ".") (fun _ _ _ -> incr count; true) in
+      if !count <> 1 then ("fails", "not one tactic")
+      else if open_goals final <> s.goals then ("fails", "it leaves other goals")
+      else ("closes", ""))
+
+(* the protocol *)
+
+let step_json loaded step =
+  `Assoc
+    [ ("text", `String (sub loaded.text step.from step.till)); ("range", range step.from step.till);
+      ("line", `Int (line_number loaded.text step.from)); ("candidates", `List (List.map (fun c -> `String c) closers)) ]
+
+let decl_json loaded decl =
+  let start, stop =
+    if decl.kind = "imports" then (0, String.length loaded.text)
+    else (loaded.sentences.(decl.first).start, loaded.sentences.(decl.last).stop)
+  in
+  `Assoc
+    [ ("key", `String decl.key); ("name", `String decl.name); ("kind", `String decl.kind); ("range", range start stop);
+      ("line", `Int (line_number loaded.text start)); ("ok", `Bool decl.ok);
+      ("steps", `List (List.map (step_json loaded) decl.steps)); ("simps", `List []); ("pieces", `List decl.pieces) ]
+
+let command_json loaded (s : sentence) =
+  let source = sub loaded.text s.start s.stop in
+  let word = first_word source in
+  `Assoc
+    [ ("kind", `String (if word = "" then "bullet" else word)); ("text", `String (first_line source));
+      ("range", range s.start s.stop);
+      ("ms", `Int s.ms) ]
+
+let answer loaded question =
+  let open Yojson.Safe.Util in
+  let key = to_string (member "key" question) in
+  let reply verdict ms message =
+    `Assoc
+      [ ("response", `String "answer");
+        ("answer",
+         `Assoc
+           [ ("key", `String key); ("verdict", `String verdict); ("ms", `List (List.map (fun ms -> `Int ms) ms));
+             ("message", `String message) ]) ]
+  in
+  let timeout = to_int (member "timeout_ms" question) in
+  let rec repeat left times once =
+    if left = 0 then reply "closes" (List.rev times) ""
+    else
+      match once () with
+      | "closes", ms, _ -> repeat (left - 1) (ms :: times) once
+      | verdict, ms, message -> reply verdict [ ms ] message
+  in
+  let runs = max 1 (to_int (member "runs" question)) in
+  match List.find_opt (fun d -> d.key = to_string (member "decl" question)) loaded.decls with
+  | None -> reply "error" [] "no such declaration"
+  | Some decl -> (
+    match to_string (member "do" question) with
+    | "run" ->
+      let edits =
+        List.map
+          (fun edit ->
+            let range = member "range" edit in
+            (to_int (member "start" range), to_int (member "stop" range), to_string (member "text" edit)))
+          (to_list (member "edits" question))
+      in
+      repeat runs [] (fun () -> run_once loaded decl edits timeout)
+    | "step" -> (
+      match List.nth_opt decl.steps (to_int (member "step" question)) with
+      | None -> reply "error" [] "no such step"
+      | Some step -> repeat runs [] (fun () -> step_once loaded step (to_string (member "text" question)) timeout))
+    | "suggest" -> reply "closes" [] ""
+    | _ -> reply "error" [] "the Rocq server has no simplifier questions")
+
+let respond initial state request =
+  let open Yojson.Safe.Util in
+  match to_string (member "request" request) with
+  | "hello" ->
+    `Assoc
+      [ ("response", `String "hello");
+        ("hello",
+         `Assoc
+           [ ("prover", `String "rocq"); ("version", `String ("The Rocq Prover, version " ^ Coq_config.version));
+             ("closers", `List (List.map (fun c -> `String c) closers)) ]) ]
+  | "load" ->
+    let loaded = load (Lazy.force initial) (to_string (member "file" request)) in
+    state := Some loaded;
+    let sentences = Array.to_list loaded.sentences in
+    let diagnostics = List.filter (is_diagnostic loaded.text) sentences in
+    `Assoc
+      [ ("response", `String "loaded"); ("decls", `List (List.map (decl_json loaded) loaded.decls));
+        ("diagnostics", `List (List.map (diagnostic_json loaded.text) diagnostics));
+        ("commands", `List (List.map (command_json loaded) sentences)) ]
+  | "ask" -> (
+    match !state with
+    | Some loaded -> answer loaded (member "question" request)
+    | None -> `Assoc [ ("response", `String "error"); ("message", `String "no file is loaded") ])
+  | _ -> `Assoc [ ("response", `String "error"); ("message", `String "unknown request") ]
 
 (* -Q and -R of the nearest _CoqProject, with their directories made absolute. *)
 let rec project_args dir =
@@ -127,243 +432,38 @@ let rec project_args dir =
   else if Filename.dirname dir = dir then []
   else project_args (Filename.dirname dir)
 
-let start_repl file =
-  let top = try Sys.getenv "XLINT_ROCQ_TOP" with Not_found -> "rocq repl" in
-  let dir = Filename.dirname (if Filename.is_relative file then Filename.concat (Sys.getcwd ()) file else file) in
-  let command = Str.split (Str.regexp " +") top @ [ "-emacs"; "-q" ] @ project_args dir in
-  let to_repl, input = Unix.pipe ~cloexec:true () in
-  let output, from_repl = Unix.pipe ~cloexec:true () in
-  let pid = Unix.create_process (List.hd command) (Array.of_list command) to_repl from_repl from_repl in
-  Unix.close to_repl;
-  Unix.close from_repl;
-  let repl = { pid; input = Unix.out_channel_of_descr input; output; state = 0; depth = 0 } in
-  ignore (read_reply repl 60000);
-  repl
+(* Rocq prints to stdout, which carries the protocol, so the answers go to a copy of it. *)
+let answers =
+  let copy = Unix.dup Unix.stdout in
+  Unix.dup2 (Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0) Unix.stdout;
+  Unix.out_channel_of_descr copy
 
-(* the loaded file *)
+let write response =
+  output_string answers (Yojson.Safe.to_string response ^ "\n");
+  flush answers
 
-type sentence = { start : int; stop : int; mutable before : int; ms : int }
+let handle initial state line =
+  write
+    (try respond initial state (Yojson.Safe.from_string line)
+     with e -> `Assoc [ ("response", `String "error"); ("message", `String (error_text e)) ])
 
-type decl = {
-  key : string;
-  name : string;
-  first : int;  (* index of its statement in the sentences *)
-  last : int;
-  ok : bool;
-  pieces : Yojson.Safe.t list;
-}
-
-type loaded = {
-  file : string;
-  text : string;
-  repl : repl;
-  sentences : sentence array;
-  decls : decl list;
-  (* Sentences before this index are in the repl as written, each at its `before` state. *)
-  mutable frontier : int;
-}
-
-let line_number text pos =
-  let n = ref 1 in
-  String.iteri (fun i c -> if i < pos && c = '\n' then incr n) text;
-  !n
-
-let range start stop = `Assoc [ ("start", `Int start); ("stop", `Int stop) ]
-
-(* A tactic sentence that fills its own lines goes with them. *)
-let piece text (s : sentence) =
-  let source = sub text s.start s.stop in
-  let word = first_word source in
-  let line_start = try String.rindex_from text (max 0 (s.start - 1)) '\n' + 1 with Not_found -> 0 in
-  let line_stop = try String.index_from text s.stop '\n' + 1 with Not_found -> String.length text in
-  let blank a b = String.for_all is_blank (sub text a b) in
-  let alone = (s.start = 0 || blank line_start s.start) && blank s.stop line_stop in
-  let start, stop = if alone then (line_start, line_stop) else (s.start, s.stop) in
-  let kind = if List.mem word [ "assert"; "pose"; "have"; "enough"; "specialize" ] then "have" else "tactic" in
-  `Assoc
-    [ ("kind", `String kind); ("text", `String (List.hd (String.split_on_char '\n' source)));
-      ("range", range start stop); ("line", `Int (line_number text s.start)) ]
-
-let is_tactic text (s : sentence) =
-  let c = text.[s.start] in
-  let word = first_word (sub text s.start s.stop) in
-  not (c = '{' || c = '}' || is_bullet c || word = "Proof" || closes_proof word)
-
-let load file =
-  let text = In_channel.with_open_bin file In_channel.input_all in
-  let repl = start_repl file in
-  let sentences = ref [] in
-  let decls = ref [] in
-  let opened = ref None in
-  let failed = ref false in
-  let rec go i index =
-    match next_sentence text i (repl.depth > 0) with
-    | None -> ()
-    | Some (start, stop) ->
-      let before = repl.state in
-      let source = sub text start stop in
-      let verdict, ms, reply = feed repl source 600000 in
-      if verdict <> "closes" && repl.depth = 0 && !opened = None then
-        failwith (Printf.sprintf "%s:%d: %s" file (line_number text start) (String.trim reply));
-      sentences := { start; stop; before; ms } :: !sentences;
-      let word = first_word source in
-      if verdict <> "closes" then failed := true;
-      (match !opened with
-       | None when repl.depth > 0 && opens_proof word -> opened := Some index; failed := false
-       | Some first when repl.depth = 0 || closes_proof word ->
-         let all = Array.of_list (List.rev !sentences) in
-         let statement = sub text all.(first).start all.(first).stop in
-         let name =
-           match Str.split (Str.regexp "[ \t\n:(]+") statement with _ :: name :: _ -> name | _ -> "" in
-         let body = Array.to_list (Array.sub all (first + 1) (index - first - 1)) in
-         let ok = (not !failed) && (word = "Qed" || word = "Defined") in
-         decls :=
-           { key = Printf.sprintf "%s:%d" file all.(first).start; name; first; last = index; ok;
-             pieces = List.map (piece text) (List.filter (is_tactic text) body) }
-           :: !decls;
-         opened := None
-       | _ -> ());
-      go stop (index + 1)
-  in
-  go 0 0;
-  let sentences = Array.of_list (List.rev !sentences) in
-  { file; text; repl; sentences; decls = List.rev !decls; frontier = Array.length sentences }
-
-(* Put the repl in the state before sentence `index`, running the file's own sentences again
-   if an earlier question went back past it. *)
-let goto loaded index =
-  let back_to state = ignore (feed loaded.repl (Printf.sprintf "BackTo %d." state) 600000) in
-  if index <= loaded.frontier then back_to loaded.sentences.(index).before
-  else begin
-    back_to loaded.sentences.(loaded.frontier).before;
-    for i = loaded.frontier to index - 1 do
-      let s = loaded.sentences.(i) in
-      s.before <- loaded.repl.state;
-      ignore (feed loaded.repl (sub loaded.text s.start s.stop) 600000)
-    done;
-    if index < Array.length loaded.sentences then loaded.sentences.(index).before <- loaded.repl.state
-  end;
-  loaded.frontier <- index
-
-let apply_edits text start stop edits =
-  let latest_first = List.sort (fun (a, _, _) (b, _, _) -> compare b a) edits in
-  let out, upto =
-    List.fold_left
-      (fun (out, upto) (from, till, replacement) -> (replacement ^ sub text till upto ^ out, from))
-      ("", stop) latest_first
-  in
-  sub text start upto ^ out
-
-(* Check the lemma once with the edits, from the state before it. *)
-let run_once loaded decl edits timeout_ms =
-  goto loaded decl.first;
-  let first, last = (loaded.sentences.(decl.first), loaded.sentences.(decl.last)) in
-  let source = apply_edits loaded.text first.start last.stop edits in
-  let deadline = Unix.gettimeofday () +. (float_of_int timeout_ms /. 1000.) in
-  let start = Unix.gettimeofday () in
-  let elapsed () = int_of_float ((Unix.gettimeofday () -. start) *. 1000.) in
-  let rec go i ran =
-    match next_sentence source i (ran && loaded.repl.depth > 0) with
-    | None -> if loaded.repl.depth = 0 then ("closes", "") else ("fails", "the proof is not finished")
-    | Some (from, till) ->
-      let left = int_of_float ((deadline -. Unix.gettimeofday ()) *. 1000.) in
-      if left <= 0 then ("timeout", "")
-      else begin
-        match feed loaded.repl (sub source from till) left with
-        | "closes", _, _ ->
-          if loaded.repl.depth = 0 && String.trim (sub source till (String.length source)) <> "" then
-            ("fails", "the edited text is more than one lemma")
-          else go till true
-        | verdict, _, reply -> (verdict, String.trim reply)
-      end
-  in
-  let verdict, message = go 0 false in
-  (verdict, elapsed (), message)
-
-(* the protocol *)
-
-let decl_json loaded decl =
-  let first, last = (loaded.sentences.(decl.first), loaded.sentences.(decl.last)) in
-  `Assoc
-    [ ("key", `String decl.key); ("name", `String decl.name); ("kind", `String "theorem");
-      ("range", range first.start last.stop); ("line", `Int (line_number loaded.text first.start));
-      ("ok", `Bool decl.ok); ("steps", `List []); ("simps", `List []); ("pieces", `List decl.pieces) ]
-
-let command_json loaded (s : sentence) =
-  let source = sub loaded.text s.start s.stop in
-  `Assoc
-    [ ("kind", `String (first_word source)); ("text", `String (List.hd (String.split_on_char '\n' source)));
-      ("range", range s.start s.stop); ("ms", `Int s.ms) ]
-
-let answer loaded question =
-  let open Yojson.Safe.Util in
-  let key = to_string (member "key" question) in
-  let reply verdict ms message =
-    `Assoc
-      [ ("response", `String "answer");
-        ("answer",
-         `Assoc
-           [ ("key", `String key); ("verdict", `String verdict); ("ms", `List (List.map (fun ms -> `Int ms) ms));
-             ("message", `String message) ]) ]
-  in
-  match List.find_opt (fun d -> d.key = to_string (member "decl" question)) loaded.decls with
-  | None -> reply "error" [] "no such declaration"
-  | Some _ when to_string (member "do" question) <> "run" -> reply "error" [] "the Rocq server can only run"
-  | Some decl ->
-    let edits =
-      List.map
-        (fun edit ->
-          let range = member "range" edit in
-          (to_int (member "start" range), to_int (member "stop" range), to_string (member "text" edit)))
-        (to_list (member "edits" question))
-    in
-    let timeout = to_int (member "timeout_ms" question) in
-    let runs = max 1 (to_int (member "runs" question)) in
-    let rec go left times =
-      if left = 0 then reply "closes" (List.rev times) ""
-      else
-        match run_once loaded decl edits timeout with
-        | "closes", ms, _ -> go (left - 1) (ms :: times)
-        | verdict, ms, message -> reply verdict [ ms ] message
-    in
-    go runs []
-
-let version () =
-  let top = try Sys.getenv "XLINT_ROCQ_TOP" with Not_found -> "rocq repl" in
-  let channel = Unix.open_process_in (List.hd (String.split_on_char ' ' top) ^ " -v </dev/null 2>&1") in
-  let line = try input_line channel with End_of_file -> "" in
-  ignore (Unix.close_process_in channel);
-  line
-
-let respond state request =
-  let open Yojson.Safe.Util in
-  match to_string (member "request" request) with
-  | "hello" ->
-    `Assoc
-      [ ("response", `String "hello");
-        ("hello", `Assoc [ ("prover", `String "rocq"); ("version", `String (version ())); ("closers", `List []) ]) ]
-  | "load" ->
-    let loaded = load (to_string (member "file" request)) in
-    state := Some loaded;
-    `Assoc
-      [ ("response", `String "loaded"); ("decls", `List (List.map (decl_json loaded) loaded.decls));
-        ("diagnostics", `List []);
-        ("commands", `List (Array.to_list (Array.map (command_json loaded) loaded.sentences))) ]
-  | "ask" -> (
-    match !state with
-    | Some loaded -> answer loaded (member "question" request)
-    | None -> `Assoc [ ("response", `String "error"); ("message", `String "no file is loaded") ])
-  | _ -> `Assoc [ ("response", `String "error"); ("message", `String "unknown request") ]
-
+(* Rocq starts at the first `load`, since its load path comes from that file's project. *)
 let () =
   let state = ref None in
-  try
-    while true do
-      let line = input_line stdin in
-      let response =
-        try respond state (Yojson.Safe.from_string line)
-        with e -> `Assoc [ ("response", `String "error"); ("message", `String (Printexc.to_string e)) ]
+  let rec wait () =
+    match input_line stdin with
+    | exception End_of_file -> ()
+    | line when Yojson.Safe.Util.(to_string (member "request" (Yojson.Safe.from_string line))) <> "load" ->
+      handle (lazy (failwith "no file is loaded")) state line;
+      wait ()
+    | line ->
+      let file = Yojson.Safe.Util.(to_string (member "file" (Yojson.Safe.from_string line))) in
+      let file = if Filename.is_relative file then Filename.concat (Sys.getcwd ()) file else file in
+      let run _ ~opts:_ _ =
+        let initial = Lazy.from_val (Vernacstate.freeze_full_state ()) in
+        handle initial state line;
+        try while true do handle initial state (input_line stdin) done with End_of_file -> ()
       in
-      print_endline (Yojson.Safe.to_string response)
-    done
-  with End_of_file -> ()
+      Coqtop.start_coq { Coqtop.coqtop_toplevel with run } ([ "-q"; "-topfile"; file ] @ project_args (Filename.dirname file))
+  in
+  wait ()

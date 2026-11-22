@@ -110,8 +110,26 @@ census takes 36 s on a laptop. Steps hold 26 to 29% of the commands' time, the t
 28% of step time, and `simpa`, `grind` and `simp` half of it. The 30 slowest steps take 4.2 s in
 the census and 3.5 s re-timed alone (three runs, medians).
 
-`provers/rocq` is the server for Rocq 9.2 (`dune build` in an opam switch with `rocq-prover` and
-`yojson`). It drives `rocq repl` and so far answers only `unused`, on a proof's tactic sentences.
+`provers/rocq` is the server for Rocq 9.2. It links Rocq's own libraries and keeps the state
+before every sentence, so a question starts at its lemma.
+
+```bash
+(cd provers/rocq && opam exec --switch rocq -- dune build)    # a switch with rocq-prover and yojson
+opam exec --switch rocq -- xlint -s provers/rocq/_build/default/main.exe FILE.v
+```
+
+It answers `unused`, `unused_imports`, `faster_step`, `diagnostic_commands`, `census` and `retime`.
+The pieces of `unused` are tactic sentences, the lemmas after `using`, hint databases and `rewrite`
+rules. A step is a tactic sentence that leaves fewer goals. Only proofs that end in `Qed` are
+checked, and a `Require Export` is reported but kept.
+
+On six standard library files (Bool, Compare_dec, EqNat, List, Permutation, Wf_nat; 6,603 lines,
+624 proofs checked) the census takes 5 s on a laptop: 5,456 sentences in 1.9 s, 960 closing steps
+in 0.7 s, and the ten slowest steps half of the step time. `unused` deletes 69 tactics and 4
+`assert`s in 58 proofs, 7.6 per 100 steps, and `unused_imports` four modules in three files. The
+files compile with every fix. `faster_step` finds nothing with steps of 20 ms or more searched.
+The four lints take 28 s.
+
 Mizar and parallel questions are not done.
 
 ## How it works
