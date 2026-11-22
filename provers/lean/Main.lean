@@ -57,6 +57,14 @@ structure Diagnostic where
   ms : Nat
   deriving ToJson
 
+/-- A top-level command, with the ms it took when the file was loaded. -/
+structure Timed where
+  kind : String
+  text : String
+  range : Range
+  ms : Nat
+  deriving ToJson
+
 /-- How often `simp` tried a rule in one theorem, and how often it rewrote with it. -/
 structure Rule where
   name : String
@@ -77,6 +85,7 @@ structure State where
   text : String := ""
   loaded : Array Loaded := #[]
   diagnostics : Array Diagnostic := #[]
+  commands : Array Timed := #[]
 
 def sub (text : String) (start stop : Nat) : String :=
   String.Pos.Raw.extract text ⟨start⟩ ⟨stop⟩
@@ -317,6 +326,15 @@ def diagnostic? (text : String) (stx : Syntax) (ms : Nat) : Option Diagnostic :=
   some { name, text := ((sub text r.start r.stop).takeWhile (· != '\n')).toString, category,
          range := if whole then { start := first, stop := next } else r, line := lineNumber text r.start, ms }
 
+/-- `theorem`, `def` or `instance` for a declaration, also under `open ... in`, else the
+command's own name, like `open`. -/
+partial def commandKind (stx : Syntax) : String :=
+  if stx.getKind == ``Lean.Parser.Command.in then commandKind stx[2] else
+  let kind := if stx.getKind == ``Lean.Parser.Command.declaration then stx[1].getKind else stx.getKind
+  match kind with
+  | .str _ last => last
+  | _ => kind.toString
+
 /-- A check fails on an error, and on `sorry`, which is only a warning. -/
 def failure? (messages : MessageLog) : IO (Option String) := do
   for message in messages.toList do
@@ -392,11 +410,16 @@ def load (file : String) : IO State := do
   let mut loaded := #[imports file text parser.pos.byteIdx]
   let mut known : Option (Array String) := none
   let mut diagnostics := #[]
+  let mut commands := #[]
   repeat
     let before := state
     let start ← IO.monoMsNow
     let (stx, state', parser') ← step inputCtx state parser
-    if let some found := diagnostic? text stx ((← IO.monoMsNow) - start) then diagnostics := diagnostics.push found
+    let ms := (← IO.monoMsNow) - start
+    if let some found := diagnostic? text stx ms then diagnostics := diagnostics.push found
+    if let (some range, false) := (range? stx, Parser.isTerminalCommand stx) then
+      let head := ((sub text range.start range.stop).takeWhile (· != '\n')).toString
+      commands := commands.push { kind := commandKind stx, text := head, range, ms }
     state := { state' with messages := {}, infoState := { enabled := true } }
     parser := parser'
     if isTheorem stx && hasBy stx then
@@ -419,7 +442,7 @@ def load (file : String) : IO State := do
             pieces := found }
         loaded := loaded.push { decl, before := some before, goals := #[] }
     if Parser.isTerminalCommand stx then break
-  return { file, text, loaded, diagnostics }
+  return { file, text, loaded, diagnostics, commands }
 
 def applyEdits (text : String) (range : Range) (edits : Array Edit) : String := Id.run do
   let sorted := edits.qsort (·.range.start > ·.range.start)
@@ -601,7 +624,7 @@ def respond (state : IO.Ref State) (request : Json) : IO Json := do
     state.set (← load file)
     let loaded ← state.get
     return Json.mkObj [("response", "loaded"), ("decls", toJson (loaded.loaded.map (·.decl))),
-      ("diagnostics", toJson loaded.diagnostics)]
+      ("diagnostics", toJson loaded.diagnostics), ("commands", toJson loaded.commands)]
   | some "ask" =>
     answer (← state.get) (← IO.ofExcept (request.getObjVal? "question"))
   | _ => return Json.mkObj [("response", "error"), ("message", "unknown request")]

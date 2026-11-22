@@ -55,6 +55,7 @@ impl Prover for Fake {
         Ok(File {
             decls: vec![decl],
             diagnostics: Vec::new(),
+            commands: Vec::new(),
         })
     }
 

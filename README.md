@@ -88,6 +88,29 @@ database too. `-L DIR` reads the databases from a directory instead of the heap 
 writes every suggestion as TSV, and `-m SECONDS` hides the small ones (default 1 s). Each
 suggestion assumes the other sessions keep their parents.
 
+## Other provers
+
+`xlint/` is a prover-independent core for the same lints, written in Rust. A prover takes part
+through a small server that answers three JSON-line requests (hello, load, ask). `provers/lean` is
+the server for Lean 4.
+
+```bash
+(cd provers/lean && lake build) && (cd xlint && cargo build)
+cd MATHLIB    # the server runs in the target project's environment
+lake env xlint -s xlint-lean FILE.lean                          # lint
+lake env xlint census -s xlint-lean -O census.tsv FILE.lean     # where the time goes
+lake env xlint retime -s xlint-lean -I census.tsv -n 100        # the slowest steps again, alone
+```
+
+The census TSV has the columns of `isabelle linter_census -O`. A `step` row is a tactic that closes
+its goal, timed once more on that goal, so its time is also inside the row of its theorem.
+
+Every lint runs on Lean 4.36.0. On six Mathlib v4.36.0 files (835 commands, 516 closing steps) the
+census takes 36 s on a laptop. Steps hold 26 to 29% of the commands' time, the ten slowest steps
+28% of step time, and `simpa`, `grind` and `simp` half of it. The 30 slowest steps take 4.2 s in
+the census and 3.5 s re-timed alone (three runs, medians). Rocq, Mizar and parallel questions are
+not done.
+
 ## How it works
 
 The session is checked once in PIDE, like in jEdit. Each question ("does this lemma still work

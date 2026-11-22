@@ -43,6 +43,7 @@ impl Prover for Fake {
                 theorem("second", 9),
             ],
             diagnostics: Vec::new(),
+            commands: Vec::new(),
         })
     }
 

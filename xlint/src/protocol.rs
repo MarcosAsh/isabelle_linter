@@ -77,11 +77,22 @@ pub struct Diagnostic {
     pub ms: u64,
 }
 
+/// A top-level command, with the ms it took when the file was loaded.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Command {
+    pub kind: String,
+    pub text: String,
+    pub range: Range,
+    pub ms: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct File {
     pub decls: Vec<Decl>,
     #[serde(default)]
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(default)]
+    pub commands: Vec<Command>,
 }
 
 /// What a prover's server knows that the core does not.

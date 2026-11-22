@@ -25,6 +25,7 @@ impl Prover for Fake {
         Ok(File {
             decls: self.decls.clone(),
             diagnostics: Vec::new(),
+            commands: Vec::new(),
         })
     }
 

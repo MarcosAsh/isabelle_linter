@@ -69,6 +69,7 @@ impl Prover for Fake {
                 decl("definition", "f", "def f n := g n\nby_measure n", measure),
             ],
             diagnostics: Vec::new(),
+            commands: Vec::new(),
         })
     }
 

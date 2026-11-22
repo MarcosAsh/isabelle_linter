@@ -1,6 +1,8 @@
+pub mod census;
 pub mod fix;
 pub mod lint;
 pub mod lints;
 pub mod protocol;
 pub mod prover;
+pub mod retime;
 pub mod rounds;
