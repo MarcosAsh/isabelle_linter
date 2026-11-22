@@ -162,13 +162,13 @@ Isabelle row is the 93 finished entries of the AFP sample.
 |---|---|---|---|---|---|---|---|
 | Isabelle AFP | 93 entries | 24,208 | 96,718 | 4.0 | 22.1% | 15.0 | 2,156 -> 2,194 s |
 | Lean Mathlib v4.36.0 | 197 of 200 | 2,133 | 3,598 | 1.7 | 8.2% | 7.9 | 55.9 -> 51.3 s |
-| Rocq 9.2 standard library | 148 of 150 | 2,682 | 5,940 | 2.2 | 12.0% | 9.6 | 22.3 -> 22.2 s |
+| Rocq 9.2 standard library | 149 of 150 | 2,825 | 6,093 | 2.2 | 12.2% | 9.7 | 16.2 -> 16.2 s |
 | Mizar MML 5.106.1517 | 68 of 100 | 3,178 | 42,256 | 13.3 | | 6.3 | |
 
 - Mathlib: 278 lemmas of `simp` lists and 8 `have`s go. Three files do not pass `lean FILE` as
   written, so their fixes are unchecked and left out. All other fixed files pass.
-- Rocq: 528 tactic sentences, 22 `using` lemmas and `rewrite` rules, 16 `assert`s and 2 hint
-  databases go. `QArith_base.v` no longer compiles with its fixes, and one file ran over 300 s.
+- Rocq: 552 tactic sentences, 22 `using` lemmas and `rewrite` rules, 16 `assert`s and 2 hint
+  databases go. Every fixed file compiles, and one file ran over 300 s.
 - Mizar: 2,502 irrelevant inferences (relinfer), 157 references that can move (reliters), 6
   justifications that can be straightforward and 3 inaccessible items. relprem reports nothing.
   32 articles ran over 300 s, which leaves out the longest ones.
