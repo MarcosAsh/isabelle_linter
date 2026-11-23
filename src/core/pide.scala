@@ -173,18 +173,21 @@ object Pide {
     check(options, session_name, dirs, progress) { checked =>
       val log = proper_string(options.string("linter_log")).map(Path.explode)
       val batch = options.int("linter_batch")
+      val resume = options.bool("linter_resume")
       lints.flatMap { lint =>
         val targets = lint.targets(checked)
-        val answers = rounds(checked.session, lint.name, progress, log, batch)(lint.ask(targets, _, options))
+        val answers =
+          rounds(checked.session, lint.name, progress, log, batch, resume)(lint.ask(targets, _, options))
         lint.read(checked, options) ::: lint.report(targets, answers, options)
       }
     }
 
   /* Ask in rounds until next has no new questions. A big round goes in batches, since thousands of
-     questions at once fill the heap. */
+     questions at once fill the heap. With resume, the answers in the log are not asked again. */
   def rounds(session: Headless.Session, name: String, progress: Progress, log: Option[Path] = None,
-      batch: Int = 500)(next: Answers => List[Question]): Answers = {
-    var answers: Answers = Map.empty
+      batch: Int = 500, resume: Boolean = false)(next: Answers => List[Question]): Answers = {
+    var answers: Answers = if (resume) log.map(read_log(_, name)).getOrElse(Map.empty) else Map.empty
+    if (answers.nonEmpty) progress.echo(name + ": " + answers.size + " answers from the log")
     def new_questions(): List[Question] =
       next(answers).filterNot(question => answers.contains(question.key)).distinctBy(_.key)
 
@@ -193,12 +196,22 @@ object Pide {
       val (serial, parallel) = round.partition(_.serial)
       progress.echo(name + ": asking " + round.length + " questions" +
         (if (serial.isEmpty) "" else ", " + serial.length + " one at a time"))
+      /* Answers are logged as they come, so that a killed run can resume. A lost one waits for
+         the end of the round, when its retry has answered. */
+      var logged = Set.empty[String]
+      def ask_logged(questions: List[Question]): Unit = {
+        val asked = ask(session, questions, progress)
+        answers ++= asked
+        val settled = questions.filterNot(question => lost(asked(question.key).verdict))
+        log.foreach(write_log(_, name, settled, answers))
+        logged ++= settled.map(_.key)
+      }
       try {
-        for (group <- parallel.grouped(batch max 1)) answers ++= ask(session, group, progress)
-        for (question <- serial) answers ++= ask(session, List(question), progress)
+        parallel.grouped(batch max 1).foreach(ask_logged)
+        serial.foreach(question => ask_logged(List(question)))
         answers ++= retry(session, name, parallel, answers, progress)
       }
-      finally { log.foreach(write_log(_, name, round, answers)) }
+      finally { log.foreach(write_log(_, name, round.filterNot(question => logged(question.key)), answers)) }
       round = new_questions()
     }
     answers
@@ -220,7 +233,7 @@ object Pide {
   /* One TSV row per question: lint, function, key, args, verdict, then the answer's properties.
      A round cut short by an error logs its missing answers as unanswered. */
   private def write_log(path: Path, lint: String, questions: List[Question], answers: Answers): Unit = {
-    def clean(s: String): String = s.replace('\t', ' ').nn.replace('\n', ' ').nn
+    def clean(s: String): String = s.replaceAll("[\t\n\r]", " ").nn
     def row(question: Question): String = {
       val answer = answers.getOrElse(question.key, unanswered)
       val fields =
@@ -229,6 +242,36 @@ object Pide {
       fields.map(clean).mkString("\t") + "\n"
     }
     for (group <- questions.grouped(log_rows)) File.append(path, group.map(row).mkString)
+  }
+
+  /* The lint's answers in an earlier run's log. Lost rows and a last row cut short by a kill
+     are dropped. Tabs and line breaks in an answer come back as spaces. */
+  private def read_log(path: Path, lint: String): Answers = {
+    var answers: Answers = Map.empty
+    if (path.is_file) {
+      val kept = path.ext("kept")
+      val whole = Bytes.read_file(path, offset = File.size(path) - 1).text == "\n"
+      using(java.nio.file.Files.newBufferedReader(path.java_path, UTF8.charset)) { reader =>
+        using(java.nio.file.Files.newBufferedWriter(kept.java_path, UTF8.charset)) { writer =>
+          var line = reader.readLine()
+          while (line != null) {
+            val following = reader.readLine()
+            val keep =
+              space_explode('\t', line) match {
+                case _ if following == null && !whole => false
+                case `lint` :: _ :: key :: _ :: verdict :: props =>
+                  if (!lost(verdict)) answers += (key -> Answer(verdict, props.flatMap(Properties.Eq.unapply)))
+                  !lost(verdict)
+                case _ => true
+              }
+            if (keep) { writer.write(line); writer.write('\n') }
+            line = following
+          }
+        }
+      }
+      Isabelle_System.move_file(kept, path)
+    }
+    answers
   }
 
   /* Sledgehammer and try0 need HOL, the rule statistics an Isabelle built with etc/simpstats.patch. */
