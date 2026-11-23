@@ -9,6 +9,9 @@ public option linter_batch : int = 500
 public option linter_log : string = ""
   -- "append every question and its answer to this TSV file (empty: no log)"
 
+public option linter_resume : bool = false
+  -- "answers already in linter_log are not asked again, so a killed run goes on where it stopped"
+
 public option linter_factor : real = 5
   -- "unused: an edited lemma gets this many times the original lemma's time (at least 1s)"
 
