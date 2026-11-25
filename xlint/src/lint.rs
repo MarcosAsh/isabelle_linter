@@ -28,6 +28,8 @@ pub struct Options {
     pub simp_scope_slow_ms: u64,
     /// How many times faster the declaration has to be with its simp calls narrowed.
     pub simp_scope_speedup: f64,
+    /// Time limit of a `vacuous` or `constant` probe, in ms.
+    pub probe_ms: u64,
 }
 
 impl Default for Options {
@@ -43,6 +45,7 @@ impl Default for Options {
             simp_hygiene_min: 100,
             simp_scope_slow_ms: 1000,
             simp_scope_speedup: 1.2,
+            probe_ms: 10_000,
         }
     }
 }
@@ -76,6 +79,7 @@ impl Options {
                     .map_err(|_| format!("bad value for {name}: {value}"))?
             }
             "simp_hygiene_min" => self.simp_hygiene_min = value.parse().map_err(bad)?,
+            "probe_ms" => self.probe_ms = value.parse().map_err(bad)?,
             _ => return Err(format!("unknown option {name}")),
         }
         Ok(())

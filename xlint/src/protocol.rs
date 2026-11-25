@@ -66,6 +66,10 @@ pub struct Decl {
     pub simps: Vec<Step>,
     #[serde(default)]
     pub pieces: Vec<Piece>,
+    /// What a probe may test: `vacuous` for a theorem with hypotheses, `always` and `never` for
+    /// a predicate.
+    #[serde(default)]
+    pub probes: Vec<String>,
 }
 
 /// A command that proves nothing, like `#eval`, with the ms it took when the file was loaded.
@@ -121,6 +125,8 @@ pub enum Ask {
     Narrow { call: usize },
     /// Check the declaration as written and count what its simplifier calls tried.
     Stats,
+    /// Run `tactic` on the goal the prover builds for `claim` from the declaration.
+    Probe { claim: String, tactic: String },
 }
 
 /// How often the simplifier tried a rule in one declaration, and how often it rewrote with it.

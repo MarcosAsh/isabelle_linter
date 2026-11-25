@@ -112,6 +112,7 @@ fn decl(key: &str, source: &str, pieces: &[(&str, &str)]) -> Decl {
         steps: Vec::new(),
         simps: Vec::new(),
         pieces,
+        probes: Vec::new(),
     }
 }
 

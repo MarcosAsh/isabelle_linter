@@ -47,6 +47,8 @@ structure Decl where
   steps : Array Step
   simps : Array Step
   pieces : Array Piece
+  /-- What a probe may test: `vacuous`, or `always` and `never`. -/
+  probes : Array String := #[]
   deriving ToJson
 
 /-- A command like `#eval`, which proves nothing. Its range is the lines to delete. -/
@@ -81,8 +83,13 @@ structure Loaded where
   goals : Array (ContextInfo × TacticInfo)
   /-- The goals before each of `decl.simps`. -/
   simpGoals : Array (ContextInfo × TacticInfo) := #[]
+  /-- The constant the command added, and the environment with it. -/
+  const : Name := .anonymous
+  after : Option Environment := none
 
 structure State where
+  /-- The `-D` options the server was started with. -/
+  options : Options := {}
   file : String := ""
   text : String := ""
   loaded : Array Loaded := #[]
@@ -358,7 +365,7 @@ def step (inputCtx : Parser.InputContext) (state : Command.State) (parser : Pars
   let (stx, parser', messages) := Parser.parseCommand inputCtx pmctx parser {}
   let context : Command.Context :=
     { cmdPos := parser.pos, fileName := inputCtx.fileName, fileMap := inputCtx.fileMap, snap? := none, cancelTk? := cancel }
-  let run := (Command.elabCommandTopLevel stx context).run { state with messages }
+  let run := ((Command.elabCommandTopLevel stx).run context).run { state with messages }
   match ← (EIO.toIO' run) with
   | .ok (_, state') => return (stx, state', parser')
   | .error e => throw <| IO.userError (← e.toMessageData.toString)
@@ -387,13 +394,13 @@ def imports (file text : String) (stop : Nat) : Loaded := Id.run do
   return { decl, before := none, goals := #[] }
 
 /-- Check a whole file's text. Returns its first error. -/
-def checkFile (file source : String) (cancel : IO.CancelToken) : IO (Option String) := do
+def checkFile (options : Options) (file source : String) (cancel : IO.CancelToken) : IO (Option String) := do
   unsafe Lean.enableInitializersExecution
   let inputCtx := Parser.mkInputContext source file
   let (header, parser, messages) ← Parser.parseHeader inputCtx
-  let (env, messages) ← processHeader header {} messages inputCtx
+  let (env, messages) ← processHeader header options messages inputCtx
   if let some error ← failure? messages then return some error
-  let mut state := Command.mkState env {} {}
+  let mut state := Command.mkState env {} options
   let mut parser := parser
   repeat
     let (stx, state', parser') ← step inputCtx state parser (some cancel)
@@ -404,15 +411,56 @@ def checkFile (file source : String) (cancel : IO.CancelToken) : IO (Option Stri
     if Parser.isTerminalCommand stx then break
   return none
 
-def load (file : String) : IO State := do
+/-- Run `x` in `env`, with the namespace and options of `scope`. -/
+def runMeta (env : Environment) (scope : Command.Scope) (cancel : Option IO.CancelToken) (x : MetaM α) : IO α := do
+  let core : CoreM α := (·.1) <$> x.run {} {}
+  let (result, _) ← (withOptions (fun _ => scope.opts) core).toIO
+    { currNamespace := scope.currNamespace, openDecls := scope.openDecls, fileName := "<xlint>", fileMap := default,
+      cancelTk? := cancel }
+    { env := env.setExporting false }
+  return result
+
+def constantOf (env : Environment) (scope : Command.Scope) (stx : Syntax) : Name := Id.run do
+  let some id := declName stx | return .anonymous
+  let found := ResolveName.resolveGlobalName env scope.opts scope.currNamespace scope.openDecls id.toName
+  return (found.findSome? fun (n, fields) => if fields.isEmpty && env.contains n then some n else none).getD .anonymous
+
+/-- In `h : A ⊢ False` the last binder is what the theorem refutes, so it is no premise. -/
+def premises (xs : Array Expr) (body : Expr) : Array Expr :=
+  if body.isConstOf ``False then xs.pop else xs
+
+/-- `vacuous` for a theorem with hypotheses; `always` and `never` for a `Prop` or `Bool` function. -/
+def probesOf (isTheorem : Bool) (c : ConstantInfo) : MetaM (Array String) :=
+  Meta.forallTelescope c.type fun xs body => do
+    if isTheorem then
+      let hyps ← (premises xs body).filterM fun x => do Meta.isProp (← Meta.inferType x)
+      return if hyps.isEmpty then #[] else #["vacuous"]
+    if !xs.isEmpty && (body.isProp || body.isConstOf ``Bool) then return #["always", "never"]
+    return #[]
+
+/-- `vacuous`: the hypotheses imply `False`. `always`, `never`: the unfolded predicate holds for
+every input, or for none. -/
+def probeGoal (claim : String) (c : ConstantInfo) : MetaM Expr :=
+  Meta.forallTelescope c.type fun xs body => do
+    if claim == "vacuous" then return ← Meta.mkForallFVars (premises xs body) (mkConst ``False)
+    let app := mkAppN (mkConst c.name (c.levelParams.map Level.param)) xs
+    let app := (← Meta.unfoldDefinition? app).getD app
+    let holds ← if body.isProp then pure app else Meta.mkEq app (mkConst ``Bool.true)
+    Meta.mkForallFVars xs (if claim == "always" then holds else mkNot holds)
+
+def probesFor (env : Environment) (scope : Command.Scope) (const : Name) (isTheorem : Bool) : IO (Array String) := do
+  let some c := env.find? const | return #[]
+  try runMeta env scope none (probesOf isTheorem c) catch _ => return #[]
+
+def load (options : Options) (file : String) : IO State := do
   let text ← IO.FS.readFile file
   let inputCtx := Parser.mkInputContext text file
   let (header, parser, messages) ← Parser.parseHeader inputCtx
-  let (env, messages) ← processHeader header {} messages inputCtx
+  let (env, messages) ← processHeader header options messages inputCtx
   if messages.hasErrors then
     let errors ← messages.toList.mapM (·.data.toString)
     throw <| IO.userError s!"{file}: cannot process the imports: {" ".intercalate errors}"
-  let mut state := Command.mkState env {} {}
+  let mut state := Command.mkState env {} options
   let mut parser := parser
   let mut loaded := #[imports file text parser.pos.byteIdx]
   let mut known : Option (Array String) := none
@@ -423,6 +471,7 @@ def load (file : String) : IO State := do
     let start ← IO.monoMsNow
     let (stx, state', parser') ← step inputCtx state parser
     let ms := (← IO.monoMsNow) - start
+    let scope := state'.scopes.head!
     if let some found := diagnostic? text stx ms then diagnostics := diagnostics.push found
     if let (some range, false) := (range? stx, Parser.isTerminalCommand stx) then
       let head := ((sub text range.start range.stop).takeWhile (· != '\n')).toString
@@ -436,20 +485,23 @@ def load (file : String) : IO State := do
         let trees := state'.infoState.trees.toArray
         let (steps, goals) := steps text (known.getD #[]) trees
         let (simps, simpGoals) := simpCalls text trees
+        let const := constantOf state'.env scope stx
         let decl : Decl :=
           { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "theorem", range, line := lineNumber text range.start,
-            ok, steps, simps, pieces := pieces text stx }
-        loaded := loaded.push { decl, before := some before, goals, simpGoals }
+            ok, steps, simps, pieces := pieces text stx, probes := ← probesFor state'.env scope const true }
+        loaded := loaded.push { decl, before := some before, goals, simpGoals, const, after := some state'.env }
     else if let some range := range? stx then
       let found := definitionPieces text (hasAtom "private" stx[0]) (binderNames stx) stx
-      unless found.isEmpty do
+      let const := constantOf state'.env scope stx
+      let probes ← if commandKind stx == "definition" then probesFor state'.env scope const false else pure #[]
+      unless found.isEmpty && probes.isEmpty do
         let decl : Decl :=
           { key := s!"{file}:{range.start}", name := (declName stx).getD "", kind := "definition", range,
             line := lineNumber text range.start, ok := (← failure? state'.messages).isNone, steps := #[], simps := #[],
-            pieces := found }
-        loaded := loaded.push { decl, before := some before, goals := #[] }
+            pieces := found, probes }
+        loaded := loaded.push { decl, before := some before, goals := #[], const, after := some state'.env }
     if Parser.isTerminalCommand stx then break
-  return { file, text, loaded, diagnostics, commands }
+  return { options, file, text, loaded, diagnostics, commands }
 
 def applyEdits (text : String) (range : Range) (edits : Array Edit) : String := Id.run do
   let sorted := edits.qsort (·.range.start > ·.range.start)
@@ -480,7 +532,7 @@ def timed (timeoutMs : Nat) (x : IO.CancelToken → IO α) : IO (Bool × Nat × 
 def runOnce (state : State) (l : Loaded) (edits : Array Edit) (timeoutMs : Nat) : IO (String × Nat × String) := do
   let source := applyEdits state.text l.decl.range edits
   let some before := l.before
-    | let (late, ms, result) ← timed timeoutMs (checkFile state.file source)
+    | let (late, ms, result) ← timed timeoutMs (checkFile state.options state.file source)
       if late then return ("timeout", ms, "")
       match result with
       | .ok none => return ("closes", ms, "")
@@ -583,6 +635,24 @@ def suggest (ctx : ContextInfo) (ti : TacticInfo) (text : String) (timeoutMs : N
       found := found.push (" ".intercalate words)
   return found
 
+/-- Run `tactic` on the goal of a probe. `closes` means the claim holds. -/
+def probeOnce (l : Loaded) (claim tactic : String) (timeoutMs : Nat) : IO (String × Nat × String) := do
+  let (some env, some before) := (l.after, l.before) | return ("error", 0, "no environment")
+  let some c := env.find? l.const | return ("error", 0, "no constant")
+  let .ok stx := Parser.runParserCategory env `tactic tactic | return ("fails", 0, "does not parse")
+  let run : MetaM (String × String) := do
+    let goal ← Meta.mkFreshExprMVar (← probeGoal claim c)
+    let left ← (Term.withSynthesize (Tactic.run goal.mvarId! (Tactic.evalTactic stx))).run'
+    let proof ← instantiateMVars goal
+    if (← getThe Core.State).messages.hasErrors || proof.hasSorry then return ("fails", "")
+    if left.isEmpty && !proof.hasExprMVar then return ("closes", "")
+    return ("open", "")
+  let (late, ms, result) ← timed timeoutMs fun cancel => runMeta env before.scopes.head! (some cancel) run
+  if late then return ("timeout", ms, "")
+  match result with
+  | .ok (verdict, message) => return (verdict, ms, message)
+  | .error e => return ("fails", ms, toString e)
+
 def answer (state : State) (question : Json) : IO Json := do
   let key := (question.getObjValAs? String "key").toOption.getD ""
   let reply (verdict : String) (ms : Array Nat) (message : String) : Json :=
@@ -597,6 +667,8 @@ def answer (state : State) (question : Json) : IO Json := do
   let once : IO (String × Nat × String) :=
     match what, goal? with
     | "run", _ => do runOnce state l (← IO.ofExcept (question.getObjValAs? (Array Edit) "edits")) timeout
+    | "probe", _ => do
+      probeOnce l (← IO.ofExcept (question.getObjValAs? String "claim")) (← IO.ofExcept (question.getObjValAs? String "tactic")) timeout
     | "step", some (ctx, ti) => do
       let text ← IO.ofExcept (question.getObjValAs? String "text")
       let (verdict, ms, messages) ← tacticOnce ctx ti text timeout
@@ -628,7 +700,7 @@ def respond (state : IO.Ref State) (request : Json) : IO Json := do
       [("prover", "lean"), ("version", Lean.versionString), ("closers", toJson (#[] : Array String))])]
   | some "load" =>
     let file ← IO.ofExcept (request.getObjValAs? String "file")
-    state.set (← load file)
+    state.set (← load (← state.get).options file)
     let loaded ← state.get
     return Json.mkObj [("response", "loaded"), ("decls", toJson (loaded.loaded.map (·.decl))),
       ("diagnostics", toJson loaded.diagnostics), ("commands", toJson loaded.commands)]
@@ -648,9 +720,18 @@ partial def serve (state : IO.Ref State) : IO Unit := do
   stdout.flush
   serve state
 
+/-- Read `-Dname=value` arguments as `lean` does. -/
+def parseOptions (args : List String) : IO Options :=
+  args.foldlM (init := {}) fun options arg => do
+    let key :: value :: rest := arg.splitOn "=" | throw <| .userError s!"expected -Dname=value, got {arg}"
+    unless key.startsWith "-D" do throw <| .userError s!"expected -Dname=value, got {arg}"
+    let name := (String.ofList (key.toList.drop 2)).toName
+    let some decl := (← getOptionDecls).find? name | throw <| .userError s!"unknown option {name}"
+    Language.Lean.setOption options decl name ("=".intercalate (value :: rest))
+
 end Xlint
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   Lean.initSearchPath (← Lean.findSysroot)
   unsafe Lean.enableInitializersExecution
-  Xlint.serve (← IO.mkRef {})
+  Xlint.serve (← IO.mkRef { options := ← Xlint.parseOptions args })

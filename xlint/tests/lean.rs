@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 use xlint::lint::{Lint, Options};
+use xlint::lints::probes::{Constant, Vacuous};
 use xlint::lints::unused::Unused;
 use xlint::prover::{Prover, Server};
 use xlint::{census, fix, retime, rounds};
@@ -89,4 +90,32 @@ fn lean_drops_the_brackets_of_an_emptied_simp_list() {
     let (edits, _) = fix::disjoint(&findings);
     let fixed = fix::apply(&std::fs::read_to_string(&file).unwrap(), &edits).unwrap();
     assert!(fixed.ends_with("n + 0 = n := by\n  simp\n"), "{fixed}");
+}
+
+#[test]
+fn lean_probes_find_contradictory_hypotheses_and_constant_predicates() {
+    let Some(mut prover) = server() else {
+        eprintln!("skipped: no lake");
+        return;
+    };
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../provers/lean/test/Probe.lean");
+    let loaded = prover.load(&file.display().to_string()).unwrap();
+    let options = Options::default();
+    let mut found = Vec::new();
+    for lint in [&Vacuous as &dyn Lint, &Constant] {
+        let answers = rounds::run(&mut prover, lint, &loaded.decls, &options, None).unwrap();
+        for finding in lint.report(&loaded.decls, &answers, &options) {
+            let decl = loaded.decls.iter().find(|d| d.key == finding.decl).unwrap();
+            found.push(format!("{} {}", finding.lint, decl.name));
+        }
+    }
+    assert_eq!(
+        found,
+        [
+            "vacuous vac",
+            "vacuous vac'",
+            "constant AlwaysTrue",
+            "constant NeverTrue"
+        ]
+    );
 }

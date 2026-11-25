@@ -44,6 +44,7 @@ fn decl(kind: &str, name: &str, text: &str, pieces: Vec<Piece>) -> Decl {
         steps: Vec::new(),
         simps: Vec::new(),
         pieces,
+        probes: Vec::new(),
     }
 }
 

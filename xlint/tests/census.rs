@@ -47,6 +47,7 @@ impl Prover for Fake {
             }],
             simps: Vec::new(),
             pieces: Vec::new(),
+            probes: Vec::new(),
         };
         Ok(File {
             decls: vec![

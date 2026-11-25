@@ -41,6 +41,7 @@ impl Prover for Fake {
                 steps: Vec::new(),
                 simps: Vec::new(),
                 pieces: vec![piece],
+                probes: Vec::new(),
             }],
             diagnostics: Vec::new(),
             commands: Vec::new(),

@@ -103,6 +103,7 @@ fn write_log(
                     .collect();
                 format!("stats {}", rules.join(" "))
             }
+            Ask::Probe { claim, tactic } => format!("probe {claim} {tactic}"),
         };
         let ms: Vec<String> = answer.ms.iter().map(u64::to_string).collect();
         writeln!(

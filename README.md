@@ -120,6 +120,12 @@ the next run. `-x TOOL` takes another linter that prints findings the same way, 
 The census TSV has the columns of `isabelle linter_census -O`. A `step` row is a tactic that closes
 its goal, timed once more on that goal, so its time is also inside the row of its theorem.
 
+Two lints only report. `vacuous` asks `grind`, `omega` and `simp_all` to prove `False` from a
+theorem's hypotheses, and `constant` whether a `Prop` or `Bool` definition holds for every input
+or for none. The server builds these goals from the elaborated constants (`-o probe_ms=10000`).
+The server takes `lean`'s `-Dname=value` options, such as a project's `maxHeartbeats`, and builds
+on Lean 4.33.1 too.
+
 Every lint runs on Lean 4.36.0. On six Mathlib v4.36.0 files (510 commands, 252 closing steps) the
 census takes 44 s on a laptop. Steps hold 14% of the commands' time, the ten slowest steps 40% of
 step time, and `simp` and `simpa` two thirds of it. The 30 slowest steps take 2.8 s in the census

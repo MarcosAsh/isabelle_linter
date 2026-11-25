@@ -151,7 +151,7 @@ fn searches<'a>(
     let file = decls.iter().find(|d| d.kind == IMPORTS);
     decls
         .iter()
-        .filter(|d| d.ok && d.kind == "definition")
+        .filter(|d| d.ok && d.kind == "definition" && !d.pieces.is_empty())
         .map(move |decl| Search {
             decl,
             file,
